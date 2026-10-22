@@ -8,3 +8,5 @@ dist/
 site/
 .hypothesis/
 .cache/
+docs/problems.md
+CLAUDE.md
