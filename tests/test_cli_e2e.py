@@ -125,8 +125,7 @@ def test_empty_folder_to_running_api(tmp_path, database):
         assert listed["total"] == 1 and listed["items"][0]["title"] == "Hello"
     finally:
         os.killpg(server.pid, signal.SIGTERM)
-        server.wait(timeout=10)
-    server_output = server.stdout.read()
+        server_output, _ = server.communicate(timeout=10)  # also closes the pipe
     assert "Starting fyro" in server_output
     assert "is insecure" not in server_output  # also hidden in the reload child process
 

@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from fyro import apps, create_app
 from fyro.apps import Registry
 from fyro.conf import ImproperlyConfigured, get_settings
+from fyro.db import engine as db_engine
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FIXTURE_MODULES = ("blog", "nomodels", "norouter", "dup", "fixture_settings")
@@ -22,6 +23,9 @@ def registry(monkeypatch):
     monkeypatch.setenv("FYRO_SETTINGS", "fixture_settings")
     fresh = Registry()
     monkeypatch.setattr(apps, "registry", fresh)
+    # The process-wide engine is global state: anything a test creates (e.g. a request through
+    # SessionMiddleware) is discarded afterwards, so it can never point at another test's database.
+    monkeypatch.setattr(db_engine, "_async_engine", None)
     get_settings.cache_clear()
     yield fresh
     get_settings.cache_clear()

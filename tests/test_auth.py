@@ -14,6 +14,7 @@ import pytest_asyncio
 from fastapi import APIRouter, Depends
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from support import MigratedSchema
 
 import fyro.db
 from fyro import Field, Model, apps, create_app
@@ -33,7 +34,7 @@ COOKIE = "__Host-fyro_session"  # fixture settings run with debug off
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def app():
+async def app(tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         for name in list(os.environ):
             if name.startswith("FYRO_"):
@@ -72,12 +73,10 @@ async def app():
             return {"username": user.username}
 
         apps.registry.apps["blog"].routes_module = SimpleNamespace(router=custom)
-        async with fyro.db.get_engine().begin() as conn:
-            await conn.run_sync(Model.metadata.drop_all)
-            await conn.run_sync(Model.metadata.create_all)
+        schema = MigratedSchema(tmp_path_factory.mktemp("schema"), DATABASE_URL)
+        await schema.create()
         yield create_app()
-        async with fyro.db.get_engine().begin() as conn:
-            await conn.run_sync(Model.metadata.drop_all)
+        await schema.drop()
         await db_engine.dispose_engine()
         Model.registry.dispose()
         Model.metadata.clear()

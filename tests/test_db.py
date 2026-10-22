@@ -7,6 +7,7 @@ import pytest_asyncio
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import Delete, Insert, Select, Update, text
+from support import MigratedSchema
 
 import fyro.db
 from fyro import Field, Model, apps, create_app
@@ -24,7 +25,7 @@ DATABASE_URL = os.environ.get(
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def Post():
+async def Post(tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         for name in list(os.environ):
             if name.startswith("FYRO_"):
@@ -45,12 +46,10 @@ async def Post():
             published: bool = False
             subtitle: str | None = None
 
-        async with fyro.db.get_engine().begin() as conn:
-            await conn.run_sync(Model.metadata.drop_all)
-            await conn.run_sync(Model.metadata.create_all)
+        schema = MigratedSchema(tmp_path_factory.mktemp("schema"), DATABASE_URL)
+        await schema.create()
         yield Post
-        async with fyro.db.get_engine().begin() as conn:
-            await conn.run_sync(Model.metadata.drop_all)
+        await schema.drop()
         await db_engine.dispose_engine()
         Model.registry.dispose()
         Model.metadata.clear()

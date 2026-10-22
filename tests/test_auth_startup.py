@@ -10,6 +10,7 @@ import pytest
 from fyro import Field, Model, apps, create_app
 from fyro.apps import Registry
 from fyro.conf import ImproperlyConfigured, get_settings
+from fyro.db import engine as db_engine
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -22,6 +23,9 @@ def clean_state(monkeypatch):
     monkeypatch.setenv("FYRO_SETTINGS", "fixture_settings")
     monkeypatch.syspath_prepend(str(FIXTURES))
     monkeypatch.setattr(apps, "registry", Registry())
+    # The process-wide engine is global state: anything a test creates (e.g. a request through
+    # SessionMiddleware) is discarded afterwards, so it can never point at another test's database.
+    monkeypatch.setattr(db_engine, "_async_engine", None)
     get_settings.cache_clear()
     yield
     Model.registry.dispose()
