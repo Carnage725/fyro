@@ -136,6 +136,24 @@ async def test_count(Post):
         assert await Post.objects.order_by("id").limit(2).count() == 2
 
 
+async def test_count_does_not_sort(Post, monkeypatch):
+    # perf bug: the count subquery kept ORDER BY, so Postgres sorted every row only to count them
+    sql = []
+    real = db_engine.default_engine.fetch
+
+    async def fetch(stmt):
+        sql.append(str(stmt))
+        return await real(stmt)
+
+    monkeypatch.setattr(db_engine.default_engine, "fetch", fetch)
+    async with fyro.db.session():
+        await make(Post, "b", "a", "c")
+        assert await Post.objects.order_by("-title").count() == 3
+        assert await Post.objects.order_by("title").offset(1).count() == 2
+    counts = [statement for statement in sql if "count(" in statement]
+    assert len(counts) == 2 and not any("ORDER BY" in statement for statement in counts)
+
+
 async def test_update_and_delete_return_rowcounts(Post):
     async with fyro.db.session():
         await make(Post, "a", "b", "c")

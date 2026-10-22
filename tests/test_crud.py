@@ -145,6 +145,12 @@ async def test_list_limit_offset_and_total(client):
     assert body["total"] == 5 and body["limit"] == 2 and body["offset"] == 1
 
 
+async def test_list_with_total_false_skips_count(client):
+    await seed(client, 3)
+    body = (await client.get("/api/blog/post?with_total=false&limit=2")).json()
+    assert body["total"] is None and [item["id"] for item in body["items"]] == [1, 2]
+
+
 @pytest.mark.parametrize("query", ["limit=101", "limit=0", "offset=-1"])
 async def test_list_rejects_bad_pagination(client, query):
     assert (await client.get(f"/api/blog/post?{query}")).status_code == 422

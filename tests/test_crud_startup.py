@@ -98,7 +98,7 @@ def test_duplicate_route_is_startup_error(registry):
         create_app()
 
 
-@pytest.mark.parametrize("field", ["limit", "offset", "search", "order_by"])
+@pytest.mark.parametrize("field", ["limit", "offset", "search", "order_by", "with_total"])
 def test_field_named_like_a_list_parameter_is_startup_error(field):
     # bug: ?limit= would mean both "page size" and "filter on the limit field"
     type(

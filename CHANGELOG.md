@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Faster counts:** `count()` no longer sorts before counting, so lists with `?order_by=` on a field without an index count much faster (4.5× more list requests per second on 50,000 rows). The admin's list pages get the same speed-up.
+- **`?with_total=false`** on the automatic list endpoint skips the count query and returns `"total": null`.
+- **Breaking:** `with_total` is now a reserved list parameter, so a model field named `with_total` is a startup error (rename it or set `Meta.api = False`).
+
 ## 0.1.0 (2026-10-22)
 
 First release.

@@ -9,7 +9,7 @@ from fyro.conf import ImproperlyConfigured
 from fyro.models.base import _storable_text
 
 UNIQUE_VIOLATION = "23505"  # Postgres SQLSTATE
-LIST_PARAMETERS = ("limit", "offset", "search", "order_by")
+LIST_PARAMETERS = ("limit", "offset", "search", "order_by", "with_total")
 
 
 def unique_violation(model: Any, error: IntegrityError) -> tuple[list[str], str]:
@@ -117,7 +117,11 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
         },
     )
     Page = create_model(
-        f"{name}Page", items=(list[Read], ...), total=(int, ...), limit=(int, ...), offset=(int, ...)
+        f"{name}Page",
+        items=(list[Read], ...),
+        total=(int | None, ...),
+        limit=(int, ...),
+        offset=(int, ...),
     )
 
     def read(obj: Any) -> Any:
@@ -129,15 +133,16 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
         offset: Annotated[int, Query(ge=0)] = 0,
         search: str | None = None,
         order_by: str | None = None,
+        with_total: bool = True,
     ) -> Any:
         try:
             qs = list_query(model, filters.model_dump(exclude_none=True), search, order_by)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         rows = await qs.limit(limit).offset(offset).all()
-        return Page(
-            items=[read(row) for row in rows], total=await qs.count(), limit=limit, offset=offset
-        )
+        # with_total=false skips the count query, which reads every matching row.
+        total = await qs.count() if with_total else None
+        return Page(items=[read(row) for row in rows], total=total, limit=limit, offset=offset)
 
     async def get(pk_value: PkParam) -> Any:
         return read(await model.objects.get(**{pk: pk_value}))

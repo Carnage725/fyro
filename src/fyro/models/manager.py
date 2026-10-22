@@ -97,7 +97,8 @@ class QuerySet:
         return rows[0]
 
     async def count(self) -> int:
-        stmt = select(func.count()).select_from(self._select().subquery())
+        # Without ORDER BY: order never changes the count, but Postgres would still sort.
+        stmt = select(func.count()).select_from(replace(self, order=())._select().subquery())
         return (await engine.default_engine.fetch(stmt))[0]
 
     async def create(self, **values: Any) -> Any:
