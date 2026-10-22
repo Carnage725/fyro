@@ -1,8 +1,26 @@
 [project]
 name = "fyro"
 version = "0.1.0"
-description = "A Django-feeling web framework on top of FastAPI."
+description = "A Django-feeling web framework on top of FastAPI: one model class gives you a table, an API, migrations, auth and an admin."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Chinmay Talnikar" }]
 requires-python = ">=3.12"
+keywords = ["fastapi", "django", "web framework", "orm", "admin", "postgres", "sqlalchemy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
@@ -28,11 +46,18 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = ["slow: end-to-end tests that start real processes"]
+timeout = 120  # pytest-timeout: a hung test fails instead of blocking the run
 
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "hypothesis>=6.170.5",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pytest-randomly>=5.0.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.17.1",
+]
+docs = [
+    "zensical==0.0.69",
 ]
