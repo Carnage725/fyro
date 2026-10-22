@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} / Postgres ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        postgres: ["16"]
+        include:
+          - python: "3.14"
+            postgres: "17"
+          - python: "3.14"
+            postgres: "18"
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: fyro
+          POSTGRES_PASSWORD: fyro
+          POSTGRES_DB: fyro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fyro -d fyro"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      FYRO_TEST_DATABASE_URL: postgresql+asyncpg://fyro:fyro@localhost:5432/fyro
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run pytest -p no:cacheprovider
+      - name: Strict run (asyncio debug, warnings are errors)
+        if: matrix.python == '3.14' && matrix.postgres == '16'
+        run: uv run pytest -p no:cacheprovider -W error
+        env:
+          PYTHONASYNCIODEBUG: "1"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv build
+      - name: Install the built wheel in a clean environment
+        run: uv run --isolated --no-project --with dist/*.whl -- python -c "import fyro, fyro.admin; print(fyro.__name__)"

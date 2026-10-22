@@ -1,0 +1,44 @@
+site_name: fyro
+site_description: Fast, Yet Ridiculously Opinionated. A Django-feeling web framework on top of FastAPI.
+copyright: MIT License
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Tutorial (10 minutes): tutorial.md
+  - Guides:
+      - Settings: guides/settings.md
+      - Models: guides/models.md
+      - Querying: guides/querying.md
+      - The automatic API: guides/api.md
+      - Migrations: guides/migrations.md
+      - Command line: guides/cli.md
+      - Auth and permissions: guides/auth.md
+      - Admin: guides/admin.md
+  - Security: security.md
+  - What v0.1 does not do: limitations.md
+  - Releasing (maintainers): releasing.md
