@@ -1,7 +1,8 @@
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import delete, func, insert, or_, select, update
+from sqlalchemy import delete, false, func, insert, or_, select, update
 
 from fyro.db import engine
 
@@ -38,6 +39,13 @@ class QuerySet:
         condition = or_(
             *(self._column(name).is_distinct_from(value) for name, value in lookups.items())
         )
+        return replace(self, where=(*self.where, condition))
+
+    def search(self, term: str, fields: Iterable[str]) -> "QuerySet":
+        """Rows where any of `fields` contains `term`, case-insensitively (% and _ literal)."""
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions = [self._column(name).ilike(f"%{escaped}%", escape="\\") for name in fields]
+        condition = or_(*conditions) if conditions else false()  # no text fields: no match
         return replace(self, where=(*self.where, condition))
 
     def order_by(self, *names: str) -> "QuerySet":

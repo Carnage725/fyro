@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content="{{ htmx_config }}">
+  <title>{% block title %}fyro admin{% endblock %}</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+  <script src="/admin/static/htmx.min.js"></script>
+</head>
+<body hx-boost="true">
+{% if user %}
+  <div class="layout">
+    <nav class="sidebar">
+      <a class="brand" href="/admin">fyro admin</a>
+      {% for app_label, items in nav.items() %}
+        <div class="nav-app">{{ app_label }}</div>
+        {% for item in items %}
+          <a class="nav-link{% if entry and entry.url == item.url %} active{% endif %}" href="{{ item.url }}">{{ item.plural }}</a>
+        {% endfor %}
+      {% endfor %}
+      <form class="whoami" method="post" action="/admin/logout">
+        <span>{{ user.username }}</span>
+        <button type="submit" class="link">Log out</button>
+      </form>
+    </nav>
+    <main class="content">{% block content %}{% endblock %}</main>
+  </div>
+{% else %}
+  <main class="center">{% block bare %}{% endblock %}</main>
+{% endif %}
+</body>
+</html>

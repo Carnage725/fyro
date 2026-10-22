@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · fyro admin{% endblock %}
+{% block content %}
+<div class="head">
+  <h1><a class="muted" href="{{ entry.url }}">{{ entry.plural }}</a> / {{ title }}</h1>
+  {% if delete_url %}<a class="button danger" href="{{ delete_url }}">Delete</a>{% endif %}
+</div>
+{% if error %}<p class="alert">{{ error }}</p>{% endif %}
+<form class="panel form" method="post" action="{{ action }}">
+  {% for f in fields %}
+    <div class="field{% if f.error %} invalid{% endif %}">
+      {% if f.widget == "checkbox" %}
+        <label class="inline"><input type="checkbox" name="{{ f.name }}" {% if f.checked %}checked{% endif %} {% if f.readonly %}disabled{% endif %}> {{ f.label }}</label>
+      {% else %}
+        <label for="f-{{ f.name }}">{{ f.label }}{% if f.required %} *{% endif %}</label>
+        {% if f.readonly %}
+          <div class="readonly">{{ f.value }}</div>
+        {% elif f.widget == "textarea" %}
+          <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="5" {% if f.required %}required{% endif %}>{{ f.value }}</textarea>
+        {% elif f.widget == "select" %}
+          <select id="f-{{ f.name }}" name="{{ f.name }}">
+            {% for value, text in f.options %}<option value="{{ value }}" {% if value == f.value %}selected{% endif %}>{{ text }}</option>{% endfor %}
+          </select>
+        {% else %}
+          <input id="f-{{ f.name }}" name="{{ f.name }}" type="{{ f.widget }}" value="{{ f.value }}" {% if f.widget == "number" %}step="any"{% endif %} {% if f.required %}required{% endif %}>
+        {% endif %}
+      {% endif %}
+      {% if f.help %}<div class="help">{{ f.help }}</div>{% endif %}
+      {% if f.error %}<div class="error">{{ f.error }}</div>{% endif %}
+    </div>
+  {% endfor %}
+  <div class="actions">
+    <button type="submit" class="button primary">Save</button>
+    <a class="button" href="{{ entry.url }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

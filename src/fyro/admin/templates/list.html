@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ entry.plural }} · fyro admin{% endblock %}
+{% block content %}
+<div class="head">
+  <h1><span class="muted">{{ entry.app_label }} /</span> {{ entry.plural }}</h1>
+  <a class="button primary" href="{{ entry.url }}/add">+ Add</a>
+</div>
+<form class="toolbar" method="get" action="{{ entry.url }}">
+  <input type="search" name="search" value="{{ search }}" placeholder="{% if searchable %}Search {{ entry.plural|lower }}…{% else %}No text fields to search{% endif %}"
+         {% if not searchable %}disabled{% endif %}
+         hx-get="{{ entry.url }}" hx-trigger="input changed delay:300ms, search" hx-include="closest form"
+         hx-target="#results" hx-select="#results" hx-swap="outerHTML" hx-push-url="true">
+  {% for name, value in keep %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+</form>
+<div class="with-filters">
+  <div id="results" class="results">
+    <form method="post" action="{{ entry.url }}/bulk-delete">
+      <table>
+        <thead>
+          <tr>
+            <th class="check"></th>
+            {% for column in columns %}<th><a href="{{ column.sort_url }}">{{ column.label }}{{ column.arrow }}</a></th>{% endfor %}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td class="check"><input type="checkbox" name="ids" value="{{ row.pk }}" aria-label="Select row {{ row.pk }}"></td>
+              {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+              <td class="actions"><a href="{{ entry.url }}/{{ row.pk }}">Edit</a></td>
+            </tr>
+          {% else %}
+            <tr><td class="empty" colspan="{{ columns|length + 2 }}">No {{ entry.plural|lower }} found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="footer">
+        <button type="submit" class="button danger small">Delete selected</button>
+        <span class="muted">{{ total }} {{ entry.plural|lower }}</span>
+        <nav class="pages">
+          {% if page > 1 %}<a href="{{ url(page=page - 1) }}">‹ Prev</a>{% endif %}
+          <span>Page {{ page }} of {{ pages }}</span>
+          {% if page < pages %}<a href="{{ url(page=page + 1) }}">Next ›</a>{% endif %}
+        </nav>
+      </div>
+    </form>
+  </div>
+  {% if filters %}
+    <aside class="filters">
+      <h3>Filter</h3>
+      {% for name, choices in filters %}
+        <div class="filter">
+          <div class="muted">{{ name|replace("_", " ")|capitalize }}</div>
+          <a class="{% if name not in active %}on{% endif %}" href="{{ url(**{name: None, 'page': 1}) }}">Any</a>
+          {% for value, text in choices %}
+            <a class="{% if active.get(name) == value %}on{% endif %}" href="{{ url(**{name: value, 'page': 1}) }}">{{ text }}</a>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    </aside>
+  {% endif %}
+</div>
+{% endblock %}

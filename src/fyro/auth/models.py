@@ -9,7 +9,7 @@ def utcnow() -> datetime:
 
 class User(Model):
     username: str = Field(max_length=150, unique=True)
-    email: str | None = None
+    email: str | None = Field(default=None, max_length=254)  # RFC 5321 maximum
     # The Argon2 hash. Excluded from every schema, so it never reaches a response.
     password: str = Field(write_only=True)
     is_active: bool = True
@@ -32,3 +32,4 @@ class Session(Model):
 
     class Meta:
         api = False
+        admin = False

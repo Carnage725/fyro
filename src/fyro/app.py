@@ -80,5 +80,11 @@ def create_app() -> FastAPI:
                     prefix=f"{prefix}/{segment}",
                     tags=[f"{app_config.label}.{segment}"],
                 )
+    if auth_installed:
+        from fyro import admin
+
+        admin.mount(app)
+    else:
+        logger.info('The admin is not mounted: it needs "fyro.auth" in installed_apps.')
     _check_duplicate_routes(app)
     return app

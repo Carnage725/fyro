@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Delete · fyro admin{% endblock %}
+{% block content %}
+<div class="head"><h1><a class="muted" href="{{ entry.url }}">{{ entry.plural }}</a> / Delete</h1></div>
+{% if error %}<p class="alert">{{ error }}</p>{% endif %}
+<form class="panel" method="post" action="{{ action }}">
+  <p>Delete {{ ids|length }} {{ entry.plural|lower if ids|length != 1 else entry.model.__name__|lower }}? This cannot be undone.</p>
+  <ul class="items">{% for item in items %}<li>{{ item }}</li>{% endfor %}</ul>
+  {% for id in ids %}<input type="hidden" name="ids" value="{{ id }}">{% endfor %}
+  <input type="hidden" name="confirm" value="yes">
+  <div class="actions">
+    {% if not error %}<button type="submit" class="button danger">Yes, delete</button>{% endif %}
+    <a class="button" href="{{ entry.url }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Forbidden · fyro admin{% endblock %}
+{% block bare %}
+<div class="card">
+  <h1>Forbidden</h1>
+  <p>You do not have permission to use the admin. Only superusers can.</p>
+  <form method="post" action="/admin/logout"><button type="submit" class="button">Log out</button></form>
+</div>
+{% endblock %}

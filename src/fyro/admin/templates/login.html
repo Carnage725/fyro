@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Log in · fyro admin{% endblock %}
+{% block bare %}
+<form class="card" method="post" action="/admin/login">
+  <h1>fyro admin</h1>
+  {% if error %}<p class="alert">{{ error }}</p>{% endif %}
+  <label>Username <input name="username" value="{{ username or '' }}" autocomplete="username" required autofocus></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <input type="hidden" name="next" value="{{ next }}">
+  <button type="submit" class="button primary">Log in</button>
+</form>
+{% endblock %}

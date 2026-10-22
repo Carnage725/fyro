@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from fastapi import HTTPException, Request, Response
 
 from fyro.auth.models import Session, User, utcnow
+from fyro.auth.passwords import verify_password
 from fyro.conf import get_settings
 
 ABSOLUTE_LIFETIME = timedelta(days=14)  # Django's SESSION_COOKIE_AGE
@@ -33,6 +34,22 @@ def _token(request: Request) -> tuple[str | None, str | None]:
         return value.strip(), "bearer"
     cookie = request.cookies.get(cookie_name())
     return (cookie, "cookie") if cookie else (None, None)
+
+
+async def authenticate(username: str, password: str) -> User | None:
+    """The active user with these credentials, or None.
+
+    Unknown users are verified against a dummy hash and is_active is checked after the hash,
+    so every failure looks and times the same.
+    """
+    user = await User.objects.filter(username=username).first()
+    valid = await verify_password(password, user.password if user else None)
+    return user if valid and user.is_active else None
+
+
+async def end_user_sessions(user_id: int) -> None:
+    """Log a user out everywhere (after a password change or deactivation)."""
+    await Session.objects.filter(user_id=user_id).delete()
 
 
 async def create_session(user: User) -> tuple[str, datetime]:

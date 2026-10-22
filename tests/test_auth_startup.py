@@ -120,3 +120,38 @@ def test_no_open_writes_warning_with_fyro_auth(caplog):
     with caplog.at_level(logging.WARNING, logger="fyro"):
         create_app()
     assert "open to anyone" not in caplog.text
+
+
+def test_admin_not_mounted_without_fyro_auth(caplog):
+    apps.registry.populate(["blog"])
+    from fastapi.routing import iter_route_contexts
+
+    with caplog.at_level(logging.INFO, logger="fyro"):
+        app = create_app()
+    paths = [route.path for route in iter_route_contexts(app.routes)]
+    assert not any(path and path.startswith("/admin") for path in paths)
+    assert all(getattr(route, "path", "") != "/admin/static" for route in app.routes)
+    assert "admin is not mounted" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("meta", "fragment"),
+    [
+        ({"admin": "yes"}, "admin"),
+        ({"list_display": ("nope",)}, "nope"),
+        ({"search_fields": ("views",)}, "views"),
+    ],
+    ids=["admin-not-bool", "unknown-list-display", "search-non-text"],
+)
+def test_admin_meta_keys_validated(meta, fragment):
+    apps.registry.populate(["blog"])
+    with pytest.raises(TypeError, match=rf"Post\.Meta.*{fragment}"):
+        type(
+            "Post",
+            (Model,),
+            {
+                "__module__": "blog.models",
+                "__annotations__": {"title": str, "views": int},
+                "Meta": type("Meta", (), meta),
+            },
+        )

@@ -10,8 +10,8 @@ from fyro.conf import ImproperlyConfigured
 UNIQUE_VIOLATION = "23505"  # Postgres SQLSTATE
 
 
-def _conflict(model: Any, error: IntegrityError) -> HTTPException:
-    """409 for a unique violation, naming the field; re-raise anything else."""
+def unique_violation(model: Any, error: IntegrityError) -> tuple[list[str], str]:
+    """Columns and message for a unique violation; re-raise any other IntegrityError."""
     if getattr(error.orig, "sqlstate", None) != UNIQUE_VIOLATION:
         raise error
     violated = getattr(error.orig.__cause__, "constraint_name", None)
@@ -21,7 +21,40 @@ def _conflict(model: Any, error: IntegrityError) -> HTTPException:
         if str(constraint.name) == violated:
             columns = [column.key for column in constraint.columns]
     what = f"this {' and '.join(columns)}" if columns else "these values"
-    return HTTPException(409, f"{model.__name__} with {what} already exists.")
+    return columns, f"{model.__name__} with {what} already exists."
+
+
+def _conflict(model: Any, error: IntegrityError) -> HTTPException:
+    """409 for a unique violation, naming the field; re-raise anything else."""
+    return HTTPException(409, unique_violation(model, error)[1])
+
+
+def readable_fields(model: Any) -> list[str]:
+    return [field for field in model.Read.model_fields if field in model.__fyro_fields__]
+
+
+def list_query(
+    model: Any,
+    filters: dict[str, Any],
+    search: str | None = None,
+    order_by: str | None = None,
+) -> Any:
+    """The rows a list shows (filters, search, order), shared by the API and the admin.
+
+    Raises ValueError for an order_by that is not a readable field.
+    """
+    pk = next(iter(model.__table__.primary_key.columns)).key
+    qs = model.objects.filter(**filters)
+    if search:
+        qs = qs.search(search, model.__fyro_search_fields__)
+    if not order_by:
+        return qs.order_by(pk)
+    field = order_by.removeprefix("-")
+    if field not in readable_fields(model):
+        raise ValueError(
+            f"Unknown order_by field {field!r}. Use one of: {', '.join(readable_fields(model))}."
+        )
+    return qs.order_by(order_by) if field == pk else qs.order_by(order_by, pk)  # stable pages
 
 
 def _guard(level: str) -> Callable[[Request], Awaitable[None]]:
@@ -73,9 +106,14 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
         filters: Annotated[Filters, Query()],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
+        search: str | None = None,
+        order_by: str | None = None,
     ) -> Any:
-        qs = model.objects.filter(**filters.model_dump(exclude_none=True))
-        rows = await qs.order_by(pk).limit(limit).offset(offset).all()
+        try:
+            qs = list_query(model, filters.model_dump(exclude_none=True), search, order_by)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        rows = await qs.limit(limit).offset(offset).all()
         return Page(
             items=[read(row) for row in rows], total=await qs.count(), limit=limit, offset=offset
         )

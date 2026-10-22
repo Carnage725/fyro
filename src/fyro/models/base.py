@@ -29,7 +29,8 @@ COLUMN_TYPES: dict[Any, Any] = {
 SUPPORTED = "int, str, bool, float, Decimal, datetime, date, UUID, Enum, or any of these | None"
 EXCLUDE_KEYS = ("create_exclude", "read_exclude", "update_exclude")
 SCHEMA_KEYS = ("create_schema", "read_schema", "update_schema")
-META_KEYS = ("table_name", "api", "permissions", *EXCLUDE_KEYS, *SCHEMA_KEYS)
+ADMIN_KEYS = ("admin", "list_display", "search_fields")
+META_KEYS = ("table_name", "api", "permissions", *ADMIN_KEYS, *EXCLUDE_KEYS, *SCHEMA_KEYS)
 PERMISSION_ACTIONS = ("read", "write")
 PERMISSION_LEVELS = ("public", "authenticated", "superuser")
 # Predictable constraint names: a unique violation maps back to its field (409s), and
@@ -107,6 +108,35 @@ def _read_meta(cls: type) -> dict[str, Any]:
     return meta
 
 
+def _admin_options(
+    name: str, meta: dict[str, Any], fields: dict[str, FieldInfo], hints: dict[str, Any]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Validate Meta.admin/list_display/search_fields and fill their defaults."""
+    if not isinstance(meta.get("admin", True), bool):
+        raise TypeError(f"{name}.Meta.admin must be True or False, got {meta['admin']!r}.")
+    readable = [
+        field
+        for field, info in fields.items()
+        if not info.write_only and field not in meta.get("read_exclude", ())
+    ]
+    text_fields = [field for field in readable if _unwrap_optional(hints[field])[0] is str]
+    list_display = tuple(meta.get("list_display", readable[:6]))
+    unknown = sorted(set(list_display) - set(readable))
+    if unknown:
+        raise TypeError(
+            f"{name}.Meta.list_display: no readable field named {unknown}. "
+            f"Readable fields: {', '.join(readable)}."
+        )
+    search_fields = tuple(meta.get("search_fields", text_fields))
+    not_text = sorted(set(search_fields) - set(text_fields))
+    if not_text:
+        raise TypeError(
+            f"{name}.Meta.search_fields: {not_text} are not readable text fields. "
+            f"Text fields: {', '.join(text_fields) or 'none'}."
+        )
+    return list_display, search_fields
+
+
 class Model(DeclarativeBase):
     """Base class for fyro models. One class gives a table plus Create/Read/Update schemas."""
 
@@ -120,6 +150,9 @@ class Model(DeclarativeBase):
     __fyro_fields__: ClassVar[dict[str, FieldInfo]]
     __fyro_api__: ClassVar[bool]
     __fyro_permissions__: ClassVar[dict[str, str] | None]
+    __fyro_admin__: ClassVar[bool]
+    __fyro_list_display__: ClassVar[tuple[str, ...]]
+    __fyro_search_fields__: ClassVar[tuple[str, ...]]
     objects: ClassVar[QuerySet] = Manager()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kw: Any) -> None:
@@ -178,6 +211,7 @@ class Model(DeclarativeBase):
                 raise TypeError(
                     f"{name}.Meta.{key}: no field named {missing}. Fields: {', '.join(fields)}."
                 )
+        list_display, search_fields = _admin_options(name, meta, fields, hints)
 
         # Rewrite plain annotations into Mapped[T] + mapped_column() before SQLAlchemy
         # maps the class. Delete first so columns follow declaration order, id first.
@@ -194,6 +228,9 @@ class Model(DeclarativeBase):
         cls.__fyro_fields__ = fields
         cls.__fyro_api__ = meta.get("api", True)
         cls.__fyro_permissions__ = meta.get("permissions")
+        cls.__fyro_admin__ = meta.get("admin", True)
+        cls.__fyro_list_display__ = list_display
+        cls.__fyro_search_fields__ = search_fields
         cls.Create, cls.Read, cls.Update = build_schemas(name, hints, fields, meta)
         for error in (db.DoesNotExist, db.MultipleObjectsReturned):
             namespace = {"__module__": cls.__module__, "__qualname__": f"{name}.{error.__name__}"}

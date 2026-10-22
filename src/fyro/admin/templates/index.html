@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="head"><h1>Dashboard</h1></div>
+{% for app_label, items in nav.items() %}
+  <section class="panel">
+    <h2>{{ app_label }}</h2>
+    {% for item in items %}
+      <a class="row-link" href="{{ item.url }}"><span>{{ item.plural }}</span><span class="muted">{{ counts[item.url] }}</span></a>
+    {% endfor %}
+  </section>
+{% endfor %}
+{% endblock %}
