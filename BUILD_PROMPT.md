@@ -1,6 +1,6 @@
 # fyro: Build Prompts
 
-> **Status: FINAL (v0.1, Phases 0 to 7).**
+> **Status: FINAL (v0.1, Phases 0 to 8, plus the Phase 6.1 fix).**
 > How to use: paste the **Master prompt** at the start of every build session, then paste exactly **one** phase prompt. One phase per session.
 
 ---
@@ -471,6 +471,197 @@ mysite/
 
 ---
 
-## Phases 8 to 10 prompts
+## Phase 8 prompt: Auth and permissions
 
-Written after the Phase 7 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
+Execute **Phase 8** of `PLAN.md` ("Auth"). The Phase 7 gate passed. Phase 6.1 added the rule that `makemigrations` never writes a migration that fails on a table with rows. `createsuperuser` moved here from Phase 7.
+
+**Goal:** add `"fyro.auth"` to `installed_apps` and get:
+- users;
+- login and logout;
+- the current user in any route;
+- per-model permissions on auto CRUD;
+- `createsuperuser`.
+
+All of it with no auth code in the project.
+
+**Public API**
+
+```python
+# settings.py
+installed_apps: list[str] = ["fyro.auth", "blog"]
+
+# blog/models.py
+class Post(Model):
+    title: str = Field(max_length=200)
+
+    class Meta:
+        permissions = {"read": "public", "write": "superuser"}   # optional; see defaults below
+
+# blog/routes.py: a hand-written route that needs a user
+from fastapi import APIRouter, Depends
+from fyro.auth import User, current_user
+
+router = APIRouter()
+
+@router.get("/mine")
+async def mine(user: User = Depends(current_user)):   # 401 when not logged in
+    ...
+```
+
+```bash
+python manage.py makemigrations && python manage.py migrate   # creates auth_user and auth_session
+python manage.py createsuperuser                              # prompts; --noinput reads env vars
+```
+
+| Method and path | Input | Output |
+|---|---|---|
+| `POST /api/auth/login` | JSON `{"username", "password"}` | `200 {"token", "token_type": "bearer", "expires_at"}`, plus the same token as a session cookie; `401 {"detail": "Invalid username or password."}`, identical for an unknown user, a wrong password and an inactive user |
+| `POST /api/auth/logout` | cookie or bearer | `204`; the session row is deleted and the cookie cleared |
+| `GET /api/auth/me` | cookie or bearer | `200 UserRead` (no password), or `401` |
+
+**Locked decisions (researched against OWASP, Django, Django REST Framework and the FastAPI security tutorial):**
+1. **Hashing: Argon2id through `pwdlib[argon2]`** (`PasswordHash.recommended()`). OWASP's first choice, with a minimum of 19 MiB memory, 2 iterations and parallelism 1. Verify that pwdlib's defaults meet that minimum. bcrypt is legacy only.
+2. **Sessions: a database table, not signed cookies.** Logout and deactivation take effect immediately (Django's default backend). Signed cookies stay valid after logout once stolen (Django ticket #24799).
+3. **No JWT.** **One opaque session token** is sent as a cookie for browsers or as `Authorization: Bearer <token>` for API clients and scripts.
+   - JWTs cannot be revoked before they expire without a deny-list or refresh tokens, which bring back the database lookup that fyro does anyway.
+   - Dropping them removes `alg: none` and algorithm-confusion risk, and a leaked `secret_key` cannot forge sessions.
+   - JWT can be added later as an option for multi-service setups. Clients won't change, since they already send `Bearer`.
+4. **Default permissions with `fyro.auth` installed: read is public, write needs login** (DRF's `IsAuthenticatedOrReadOnly`).
+   - Until ownership checks exist (relations, v0.2), "logged in" means any account can write any row.
+   - That is acceptable in v0.1 only because there is no public sign-up.
+5. **Baseline CSRF protection is built now.** OWASP: `SameSite` is defense in depth, not a fix on its own, and custom request headers are its recommended defense for API-driven sites. HTMX sends `HX-Request` by itself, so the Phase 9 admin works unchanged.
+6. **Login by username** (Django's default). `email` is optional and not unique. There is no custom user model in v0.1, so this choice sticks.
+
+**Rules**
+- **`fyro.auth` is an ordinary installed app inside the fyro package.** Its label is `auth`, its tables are `auth_user` and `auth_session`, and they go into the project's single migration history. Install order in `installed_apps` does not matter.
+- **`User`:**
+  - `username: str` (unique, max 150, compared exactly, case-sensitive as in Django);
+  - `email: str | None = None`;
+  - `password: str` (stores the **Argon2 hash** and never appears in any schema, response, log or OpenAPI);
+  - `is_active: bool = True`;
+  - `is_superuser: bool = False`;
+  - `date_joined: datetime = Field(default_factory=datetime.now)`.
+
+  `Meta.api = False`: there is no CRUD for users in v0.1.
+- **`Session`:**
+  - `token_hash: str` (unique; the SHA-256 of the token, so a leaked table leaks no live sessions);
+  - `user_id: int` (indexed; a plain column, because relations come in v0.2);
+  - `created_at`;
+  - `expires_at`.
+
+  `Meta.api = False`.
+- **Tokens:**
+  - `secrets.token_urlsafe(32)`, created fresh at every login, which also prevents session fixation.
+  - The lifetime is 14 days (Django's `SESSION_COOKIE_AGE`), as a constant in v0.1.
+  - An expired session is deleted when it is next used and gives 401.
+  - Cleaning up expired sessions in bulk is deferred.
+- **Cookie:** `fyro_session`, with:
+  - `HttpOnly`;
+  - `SameSite=Lax`;
+  - `Secure` unless `debug`;
+  - `Path=/`;
+  - `Max-Age` equal to the lifetime.
+- **Login:**
+  - Usernames are looked up exactly.
+  - An unknown user is verified against a precomputed **dummy hash**, so timing does not reveal which usernames exist (the FastAPI tutorial's advice).
+  - An inactive user gets the same 401 as a wrong password.
+  - The login endpoint accepts JSON only.
+- **`current_user` / `optional_user`** are FastAPI dependencies exported from `fyro.auth`.
+  - They read `Authorization: Bearer` first, then the cookie.
+  - They hash the token and look up an unexpired session, then an active user.
+  - `current_user` raises 401 and `optional_user` returns `None`.
+  - A bad, guessed, expired or logged-out token is a 401. The response never says which.
+- **CSRF:**
+  - A request **authenticated by the cookie** using POST, PUT, PATCH or DELETE must carry an `X-Requested-With` or `HX-Request` header. Otherwise it gets `403 {"detail": "CSRF check failed: send an X-Requested-With header."}`.
+  - Bearer-authenticated requests are exempt, because browsers never attach them automatically.
+  - Unauthenticated requests are exempt because they have nothing to forge.
+- **Permissions:**
+  - `Meta.permissions` maps the actions `"read"` (list, get) and `"write"` (create, patch, delete) to the levels `"public"`, `"authenticated"` and `"superuser"`.
+  - Either key may be omitted; the default for that action applies.
+  - Auto CRUD enforces it: 401 when not logged in, 403 when logged in but not allowed.
+  - **The permission check runs before the row is loaded.** A request that isn't allowed gets 401/403 even for an id that does not exist, so nobody can probe which ids exist (id enumeration). 404 is only for callers who are allowed to see the model.
+  - Unknown actions or levels raise `TypeError` at class definition, as other `Meta` errors do.
+  - Without `fyro.auth` installed:
+    - any model with `Meta.permissions` makes `create_app()` raise `ImproperlyConfigured`, saying to install `fyro.auth`;
+    - CRUD stays open, as in Phase 5;
+    - `create_app()` logs one warning when `debug` is off: "API writes are open to anyone; add fyro.auth to installed_apps".
+- **`createsuperuser`:**
+  - It is a CLI command that needs `fyro.auth` installed. Otherwise it gives a one-line error.
+  - It prompts for username, email (optional) and password twice, with `getpass`.
+  - `--noinput` reads `FYRO_SUPERUSER_USERNAME`, `FYRO_SUPERUSER_EMAIL` and `FYRO_SUPERUSER_PASSWORD` from the **environment**. They cannot go in `.env`, which Phase 1 limits to settings fields.
+  - It refuses an existing username, an empty password and mismatched passwords.
+- **No secrets anywhere:** password hashes, raw tokens and token hashes never appear in responses (except the token in the login response), logs, error messages or OpenAPI.
+
+**Layout:**
+- `src/fyro/auth/` holds:
+  - `__init__.py` (`User`, `current_user`, `optional_user`);
+  - `models.py`;
+  - `routes.py`;
+  - `passwords.py`;
+  - `sessions.py`.
+- Small edits:
+  - `crud.py` (permission and CSRF checks);
+  - `models/base.py` (the `Meta.permissions` key);
+  - `app.py` (checks and the warning);
+  - `cli.py` (`createsuperuser`).
+- Add `pwdlib[argon2]` to the runtime dependencies. There is **no** PyJWT.
+
+**Steps and checks**
+1. Check the current docs:
+   - the FastAPI security tutorial (`OAuth2PasswordBearer`-style dependencies, the dummy-hash advice);
+   - pwdlib (its defaults against OWASP's Argon2id minimum);
+   - the OWASP cheat sheets for password storage, session management and CSRF;
+   - Starlette `Response.set_cookie` / `delete_cookie`;
+   - Python `secrets` and `hmac.compare_digest`.
+2. **Spike.** Prove these things:
+   - `fyro.auth`, an installed app inside the fyro package, loads through the Phase 2 loader;
+   - its models join the project's migration history (`makemigrations` creates `auth_user` and `auth_session`);
+   - a CLI command can require it.
+
+   **Stop and report.**
+3. Write failing tests:
+   - **Login:** success; failure with the same 401 body for an unknown user, a wrong password and an inactive user; the dummy hash verified for unknown users; JSON only.
+   - **Sessions:**
+     - a token works as a cookie and as a bearer header;
+     - the token hash is stored, never the raw token;
+     - a fresh token on each login;
+     - logout makes the old token 401 at once;
+     - an expired session gives 401 and its row is deleted;
+     - a deactivated user gives 401;
+     - a guessed or tampered token gives 401.
+   - **Cookie flags.**
+   - **CSRF:** a cookie write without the header gets 403; with `X-Requested-With` or `HX-Request` it passes; a bearer write needs no header.
+   - **Dependencies:** `/me`, and `current_user` / `optional_user` in a hand-written route.
+   - **Permission matrix:** every action and level × anonymous, user and superuser gives 401, 403 or 200/201/204; the defaults with no `Meta.permissions`; `Meta.permissions` validation errors; `Meta.permissions` without `fyro.auth` installed raises `ImproperlyConfigured`; the open-writes warning appears only with debug off.
+   - **`createsuperuser`:** interactive, `--noinput`, a duplicate, a mismatch, an empty password, and running without `fyro.auth`.
+   - **No leaks:** a hash never in any response or OpenAPI schema.
+   - **Migrations:** they create the `auth_*` tables.
+4. Implement. Check: all tests pass (Phases 0 to 7 still green) and `uv run ruff check` is clean.
+5. **Gate.** Use a scratch project with `fyro.auth` and `blog`. Then:
+   1. run `createsuperuser`;
+   2. log in through `/docs` and through curl with a bearer token;
+   3. an anonymous write gets 401;
+   4. a logged-in write succeeds;
+   5. a cookie write without the header gets 403;
+   6. a non-superuser on a superuser-only model gets 403;
+   7. log out, and the old token gets 401;
+   8. show the `auth_user` row (hashed password) and the `auth_session` row (hash only).
+
+   **Stop and ask the user to approve before Phase 9.**
+
+**Out of scope:**
+- OAuth and social login;
+- password reset, password change and email;
+- JWT and refresh tokens;
+- rate limiting (in PLAN's "Not building");
+- object-level and ownership permissions (relations, v0.2);
+- groups and roles beyond superuser;
+- a custom user model;
+- user-management endpoints and sign-up;
+- a command that clears expired sessions.
+
+---
+
+## Phases 9 to 10 prompts
+
+Written after the Phase 8 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.

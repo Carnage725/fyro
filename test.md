@@ -11,7 +11,7 @@ Agents tend to write tests that fail none of these ways: they pass on the first 
 - **Stack:** FastAPI, Pydantic v2, pydantic-settings, SQLAlchemy 2 async, asyncpg, Alembic, Typer. Postgres only.
 - **Test tools:** pytest, pytest-asyncio (`asyncio_mode = "auto"`), httpx, and a real Postgres from `docker compose up -d`.
 - **The contract is `PLAN.md` and `BUILD_PROMPT.md`, not `src/`.** Expected values come from the phase spec. If the spec does not say what should happen, stop and ask the user. Do not read the answer off the code.
-- **Build state:** phases 0 to 6 are built (settings, app loader, Model class, engine/session/manager, auto CRUD, migrations). Phase 7 (CLI) is drafted in `BUILD_PROMPT.md` but not built. Phases 7 to 10 do not exist yet. Only test what exists. Checklist items for later phases apply when that phase lands.
+- **Build state:** phases 0 to 7 are built (settings, app loader, Model class, engine/session/manager, auto CRUD, migrations, CLI), plus the phase 6.1 fix for new NOT NULL columns. Phase 8 (auth) is specified in `BUILD_PROMPT.md` but not built. Phases 8 to 10 do not exist yet. Only test what exists. Checklist items for later phases apply when that phase lands.
 
 Four pieces carry the framework and get the heaviest attack. A silent bug in any of them breaks every user at once:
 
@@ -22,6 +22,7 @@ Four pieces carry the framework and get the heaviest attack. A silent bug in any
 | Engine, session, manager | `src/fyro/db/`, `src/fyro/models/manager.py` | `tests/test_db.py` |
 | Auto CRUD (phase 5) | `src/fyro/crud.py`, `src/fyro/app.py` (404 handler, route order, duplicate check) | `tests/test_crud.py` (DB), `tests/test_crud_startup.py` (startup errors) |
 | Migrations (phase 6) | `src/fyro/migrations/__init__.py`, `src/fyro/migrations/template/{env.py,script.py.mako}` | `tests/test_migrations.py` (own database `fyro_test_migrations`) |
+| CLI (phase 7) | `src/fyro/cli.py`, `[project.scripts]` in `pyproject.toml` | `tests/test_cli.py` (CliRunner, own database `fyro_test_cli`), `tests/test_cli_e2e.py` (real processes, marked `slow`, own database `fyro_test_e2e`) |
 
 ## Mindset
 
@@ -57,6 +58,13 @@ Copy the promises for the unit under test from `PLAN.md` / `BUILD_PROMPT.md` int
   - one `migrate(target)` that moves up or down (`"zero"` empties the database);
   - `migrations/` in the directory holding the settings module's top package;
   - enums stored as VARCHAR(255) holding the member value, with no CHECK constraint.
+- the phase 7 decisions:
+  - `fyro new` writes `manage.py`, `asgi.py`, `.env` (`fyro-insecure-` key, `FYRO_DEBUG=true`, `FYRO_DATABASE_URL`), `.gitignore`, `compose.yaml` (host port `${FYRO_DB_PORT:-5432}`) and `<name>/settings.py`, and never overwrites;
+  - `startapp` never edits `settings.py`; it prints the line, and a warning names app folders missing from `installed_apps`;
+  - `runserver` reloads by default and binds 127.0.0.1;
+  - `ImproperlyConfigured` prints one line and exits 1;
+  - the dev-key warning is hidden inside the CLI (Django-style);
+  - `createsuperuser` belongs to phase 8.
 
 ### 2. List the attacks
 Before writing code, list the attacks using the checklist below. Each one becomes a test or a recorded gap.
@@ -168,6 +176,26 @@ fyro-specific mutations (do all that apply to the code under test):
   - The two-heads check is skipped.
   - `compare_type=False`.
   - Enums go back to `native_enum=True`, or store names instead of values.
+  - **Phase 6.1** (the first three were run by hand and were all KILLED):
+    - skip the fill rewrite;
+    - keep the temporary database default;
+    - turn an unknown factory into a plain add;
+    - evaluate a factory once for all rows (same uuid everywhere);
+    - format the default with an f-string instead of SQLAlchemy quoting.
+- **CLI (phase 7):** the first five were run by hand at the phase 7 build and were all KILLED.
+  - Errors are not caught (tracebacks instead of one line).
+  - `new` writes files before the overwrite check.
+  - Reload is off by default.
+  - Alembic stdout is not redirected.
+  - The unregistered-app warning is removed.
+  - `new` uses a fixed secret key.
+  - The key prefix is dropped (so production would accept it silently).
+  - The `.env` lacks `FYRO_DEBUG`.
+  - Bind 0.0.0.0 by default.
+  - Skip the module-shadow check.
+  - The dev-key filter matches every `UserWarning`.
+  - `PYTHONWARNINGS` is not passed to the reload child.
+  - `runserver` starts even when `create_app()` fails.
 
 Hand-mutate at least every conditional and boundary in the code you tested. For each mutant, record KILLED, or SURVIVED with either a new test that kills it or a one-line reason it changes no behavior. Never drop a mutant to improve the numbers.
 
@@ -262,7 +290,19 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
 - **Known gap to attack:** a model field named `limit` or `offset` collides with the paging params, and nothing checks for it yet. Report what happens.
 
 **Migrations (phase 6, built):**
-- **Adding a NOT NULL field with a default to a table that already has rows (attack first).**
+- **Adding a NOT NULL field to a table that already has rows (phase 6.1 fix).** This was reproduced at the phase 7 gate (`NotNullViolationError ... contains null values`) and fixed in phase 6.1.
+  - **Contract:** `makemigrations` never writes a migration that fails on a non-empty table.
+  - **Constants:** int, bool, str with a quote, float and Enum fill old rows, and leave no column default.
+  - **Factories:** `uuid4` gives distinct values per row; `datetime.now` and `date.today` fill.
+  - **Refusals:** no default, or an unknown factory, gives `ImproperlyConfigured` and writes no file.
+  - **Nullable:** a nullable field is a plain add.
+  - **Still to attack:**
+    - Decimal, date, datetime and UUID *constants*;
+    - an Enum whose value contains a quote;
+    - a default longer than the column (`max_length`);
+    - a unique field with a constant default on a table with 2+ rows (expected: the migration fails on the unique constraint; decide whether to refuse up front);
+    - changing an existing column from `T | None` to `T` while rows hold NULLs (not handled: expect a failing migration);
+    - `date.today` vs the server timezone.
   - Defaults are Python-side only (phase 3 decision), so the generated `add_column(..., nullable=False)` has no `server_default`.
   - Postgres rejects that on a non-empty table (`column ... contains null values`).
   - Expected: `migrate()` fails. This is a likely real gap between two locked decisions: report it, do not paper over it.
@@ -301,9 +341,60 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
 - **Concurrency:** two `migrate()` calls at once on one database. Alembic takes no lock. Report what happens.
 - **Package data:** a built wheel (`uv build`) contains `fyro/migrations/template/env.py` and `script.py.mako`.
 
-**CLI (phase 7):** `fyro new` writes `.env` with a `fyro-insecure-` key and a `.gitignore` containing `.env`; it never overwrites an existing project; the end-to-end 10-minute test is scripted.
+**CLI (phase 7, built):**
+- **`new`:**
+  - the exact file tree;
+  - the key is random per project, prefixed `fyro-insecure-` and at least 50 random characters;
+  - `.env` holds only keys that `Settings` accepts (Phase 1 forbids extras): **adding any other key there breaks every command**;
+  - the generated project loads with `debug=True`, and with `FYRO_DEBUG=false` the generated key is an error;
+  - `.gitignore` lists `.env`;
+  - `compose.yaml` port override works (`FYRO_DB_PORT=5433 docker compose up -d`).
+- **`new` refusals:** invalid identifiers, keywords, names shadowing a module (`json`, `test`), an existing file anywhere in the tree, a target that is a file not a directory, and an unwritable directory. Each refusal leaves **nothing** behind (no partial project).
+- **`startapp`:**
+  - the files exist and `settings.py` is byte-for-byte unchanged;
+  - an existing directory and a bad name are refused;
+  - the generated `models.py` compiles and creates no table.
+- **Project commands** (`makemigrations`, `migrate`, `runserver`), via both `python manage.py` and `fyro` with `FYRO_SETTINGS`:
+  - run from the project root, from a subdirectory, and with `FYRO_SETTINGS` unset;
+  - output carries no Alembic `Generating`/`INFO` lines unless `--verbose`;
+  - the exit code is 1 for `ImproperlyConfigured` and for model `TypeError`s at load time;
+  - **a database error (Postgres down, `NotNullViolation`) currently prints a full traceback: decide whether that is wanted.**
+- **Warnings:**
+  - the app-not-installed warning names the folder and settings file, and does not fire for installed apps, the settings package or folders without `models.py`;
+  - the unapplied-migrations warning fires before `migrate` and not after;
+  - `runserver` with Postgres down warns instead of crashing.
+- **`runserver`:**
+  - reload is on and `--no-reload` works;
+  - it binds 127.0.0.1;
+  - code edits trigger a reload;
+  - Ctrl+C / SIGTERM stops the reloader and its child (no orphan process holding the port);
+  - a port already in use gives a clear error.
+- **Dev-key warning:**
+  - it is hidden in every CLI command and in the reload child;
+  - it still shows when running `uvicorn asgi:app` directly with debug on;
+  - an insecure key with debug off is still an **error** through the CLI.
+- **End to end:** `tests/test_cli_e2e.py` runs the PLAN success test with real processes. Keep it green, and keep its timing printout honest (machine time, not the human 10-minute budget).
 
-**Auth (phase 8):** no endpoint ever returns a password hash; tampered, expired and wrong-algorithm (`alg: none`) tokens are rejected; 403 versus 404; constant-time compares.
+**Auth (phase 8, database-backed opaque session tokens, no JWT):**
+- **Leaks:** no endpoint, log line, error or OpenAPI schema ever contains a password hash, a raw token (except the login response) or a token hash.
+- **Login:** an unknown user, a wrong password and an inactive user give the identical 401 body. Unknown users still run a hash verification, so time cannot enumerate usernames; check this coarsely, with no flaky timing asserts.
+- **Tokens:**
+  - guessed, tampered, truncated, expired and logged-out tokens are all 401;
+  - a deactivated user's token is 401 on the next request;
+  - every login gives a new token (no session fixation);
+  - only the SHA-256 is stored.
+- **Cookie:** the flags are `HttpOnly`, `SameSite=Lax`, and `Secure` unless debug. Logout clears the cookie **and** deletes the row.
+- **CSRF:**
+  - a cookie-authenticated POST, PATCH or DELETE without `X-Requested-With`/`HX-Request` gives 403;
+  - a bearer request needs no header;
+  - a request with **both** a valid bearer token and a cookie is authenticated by the bearer token (it is read first), so no CSRF header is needed.
+- **Permissions:**
+  - the full matrix of action × level × anonymous, user and superuser (401 vs 403 vs success);
+  - the defaults (read public, write authenticated);
+  - the permission check runs before the row lookup: an unauthorized caller gets 401/403 for both existing **and** missing ids, never 404 (no id enumeration); only allowed callers see 404;
+  - `Meta.permissions` without `fyro.auth` gives `ImproperlyConfigured`.
+- **`createsuperuser`:** a duplicate, a mismatch, an empty password, `--noinput` without the env vars, and a run without `fyro.auth` installed.
+- **Concurrency:** two logins at once give two valid sessions; logout during an in-flight request.
 
 **Admin (phase 9):** permissions are enforced on every action; field values are HTML-escaped (stored XSS); state-changing forms are protected against CSRF.
 

@@ -31,6 +31,7 @@ A Django-feeling framework on top of FastAPI. One model class produces the table
 | Engine seam | The manager only calls `engine.fetch(stmt) -> list` (rows/scalars) and `engine.execute(stmt) -> int` (rowcount). Python now, Rust (PyO3/maturin) later, with an identical API. |
 | Update schema | Strict: every field defaults to `None`, but the annotation stays `T`. An explicit `null` on a NOT NULL column is rejected. (Phase 3 gate) |
 | Defaults | Scalar defaults are Python-side only (`mapped_column(default=...)`). No `server_default`. (Phase 3 gate) |
+| New NOT NULL columns | `makemigrations` never writes a migration that fails on a table with rows. A constant default is added as a temporary database default and then dropped (Django's approach). `uuid4`, `datetime.now` and `date.today` factories fill old rows with `gen_random_uuid()`, `now()` or `CURRENT_DATE` (add nullable, fill, set NOT NULL). No default, or any other factory, is refused with an error. (Phase 6.1 fix) |
 | Enums | Stored as VARCHAR(255) holding the member value (`native_enum=False`), not Postgres `ENUM` types. No CHECK constraint; Pydantic validates. (Phase 6 decision) |
 | Migration files | Hidden `env.py` inside fyro; Alembic hex revision ids with date-prefixed file names; one `migrate(target)` that moves up or down, `"zero"` = empty. (Phase 6 decision) |
 | Not found | `create_app()` turns `fyro.db.DoesNotExist` into a 404 on every route, including hand-written ones. (Phase 4 gate) |
@@ -216,7 +217,7 @@ Full spec: `BUILD_PROMPT.md`, Phase 4 prompt. Summary:
 5. **Auto CRUD** (detailed in `BUILD_PROMPT.md`): per-model router at `/api/<app>/<model>` with list (field filters, limit/offset, total count), get, create, patch and delete. It shows in OpenAPI and can be opted out of via `Meta.api = False`. A custom route that duplicates a CRUD method+path is a startup error naming both. **This is the demo gate.**
 6. **Migrations**: Alembic, async `env.py`, one history per project, `target_metadata` from the registry. Spike: `Config` without `alembic.ini`. Renames show up as drop + add, and this is documented.
 7. **CLI** (Typer): `new` (also writes `.env` with a `fyro-insecure-` secret key and a `.gitignore` containing `.env`), `startapp`, `runserver` (uvicorn), `makemigrations`, `migrate`. Verify with a scripted end-to-end run of the 10-minute test.
-8. **Auth**: built-in `fyro.auth` app, `User` model, `createsuperuser` command (moved from Phase 7), password hashing, session + JWT login, per-model permissions (`Meta.permissions`).
+8. **Auth** (detailed in `BUILD_PROMPT.md`): built-in `fyro.auth` app, `User` model, `createsuperuser` command (moved from Phase 7), Argon2id password hashing, one database-backed opaque session token sent as a cookie or a Bearer header (**no JWT**: revocable logout, decided at Phase 8 planning), baseline CSRF header check for cookie writes, per-model permissions (`Meta.permissions`: read/write × public/authenticated/superuser; default read public, write authenticated).
 9. **Admin**: at `/admin`, HTMX + Jinja2 inside the package, consuming the generated API: list, search, edit, delete. No relation picker in v0.1 because relations come in v0.2.
 10. **Rust engine**: profile real usage, then swap the `Engine` implementation via PyO3/maturin. The public API does not change.
 
