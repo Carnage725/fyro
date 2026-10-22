@@ -34,6 +34,7 @@ migrations.migrate("<rev>")   # up or down to a revision; "zero" empties the dat
 Revision files live in `<project root>/migrations/`. fyro keeps the Alembic config and `env.py` internal.
 
 - **Renames are not detected.** Renaming a field shows up as drop + add, which loses that column's data. `makemigrations()` logs a warning when it sees this.
+- **New required fields on tables with data.** A constant default (`views: int = 0`) fills existing rows. `default_factory=uuid.uuid4`, `datetime.now` and `date.today` give each existing row its own value. A required field with no default, or another `default_factory`, is refused: give it a constant default or make it optional (`T | None = None`).
 - **Enums are stored as VARCHAR(255)** holding the member value, so adding members needs no migration. Before removing a member, update the rows that use it: reading a row whose stored value is no longer in the enum raises `LookupError`.
 
 ## Development

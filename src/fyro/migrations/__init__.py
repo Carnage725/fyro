@@ -5,9 +5,12 @@ No alembic.ini and no env.py in the project: both live in fyro. The project's
 """
 
 import asyncio
+import enum
 import importlib
 import logging
 import os
+import uuid
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,16 +20,23 @@ from alembic.operations import ops
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.util import CommandError
+from sqlalchemy import Column
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from fyro import apps
 from fyro.conf import SETTINGS_ENV_VAR, ImproperlyConfigured, get_settings
+from fyro.models.fields import MISSING
 
 __all__ = ["makemigrations", "migrate"]
 
 TEMPLATE_DIR = Path(__file__).parent / "template"
 # Date prefix so files sort by creation time; Alembic's hex ids stay the revision ids.
 FILE_TEMPLATE = "%(year)d_%(month).2d_%(day).2d_%(hour).2d%(minute).2d-%(rev)s_%(slug)s"
+# Computed defaults that Postgres can evaluate per row, to fill rows that existed before the
+# column did. Any other default_factory is refused: give a constant or make the field optional.
+SQL_FOR_FACTORY = {uuid.uuid4: "gen_random_uuid()", datetime.now: "now()", date.today: "CURRENT_DATE"}
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +114,66 @@ def _warn_renames(upgrade_ops: ops.UpgradeOps) -> None:
             )
 
 
+def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
+    """Rewrite NOT NULL add_column ops so rows that already exist get a value.
+
+    Postgres refuses ADD COLUMN ... NOT NULL on a non-empty table without a value, and fyro's
+    defaults live in Python only. A constant is added as a temporary database default, then
+    dropped (Django's approach); a known factory fills rows with its SQL equivalent.
+    """
+    models = {
+        model.__tablename__: model
+        for app in apps.registry.apps.values()
+        for model in app.models.values()
+    }
+    for table_ops in upgrade_ops.ops:
+        if not isinstance(table_ops, ops.ModifyTableOps):
+            continue
+        rewritten: list[Any] = []
+        for op in table_ops.ops:
+            column = getattr(op, "column", None)
+            if isinstance(op, ops.AddColumnOp) and not column.nullable and column.server_default is None:
+                rewritten.extend(_fill_ops(models[table_ops.table_name], op))
+            else:
+                rewritten.append(op)
+        table_ops.ops = rewritten
+
+
+def _fill_ops(model: Any, add: ops.AddColumnOp) -> list[Any]:
+    table, column = add.table_name, add.column
+    info = model.__fyro_fields__[column.name]
+    if info.default_factory is None and info.default is not MISSING:
+        value = info.default.value if isinstance(info.default, enum.Enum) else info.default
+        return [
+            ops.AddColumnOp(
+                table, Column(column.name, column.type, nullable=False, server_default=str(value))
+            ),
+            ops.AlterColumnOp(
+                table,
+                column.name,
+                existing_type=column.type,
+                existing_nullable=False,
+                modify_server_default=None,
+            ),
+        ]
+    sql = SQL_FOR_FACTORY.get(info.default_factory)
+    if sql is not None:
+        quote = postgresql.dialect().identifier_preparer.quote
+        return [
+            ops.AddColumnOp(table, Column(column.name, column.type, nullable=True)),
+            ops.ExecuteSQLOp(f"UPDATE {quote(table)} SET {quote(column.name)} = {sql}"),
+            ops.AlterColumnOp(
+                table, column.name, existing_type=column.type, modify_nullable=False
+            ),
+        ]
+    raise ImproperlyConfigured(
+        f"{model.__name__}.{column.name}: a new NOT NULL column on an existing table needs a "
+        "value for the rows already there. Give it a constant default (e.g. = 0), use "
+        "default_factory=uuid.uuid4, datetime.now or date.today, or make it optional "
+        "(T | None = None)."
+    )
+
+
 def makemigrations(message: str | None = None) -> Path | None:
     """Write a revision for model changes. Returns its path, or None when nothing changed."""
     _ensure_sync()
@@ -123,6 +193,7 @@ def makemigrations(message: str | None = None) -> Path | None:
             directives[:] = []
         else:
             _warn_renames(upgrade_ops)
+            _fill_existing_rows(upgrade_ops)
 
     result = command.revision(
         cfg,
