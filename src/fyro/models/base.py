@@ -29,7 +29,9 @@ COLUMN_TYPES: dict[Any, Any] = {
 SUPPORTED = "int, str, bool, float, Decimal, datetime, date, UUID, Enum, or any of these | None"
 EXCLUDE_KEYS = ("create_exclude", "read_exclude", "update_exclude")
 SCHEMA_KEYS = ("create_schema", "read_schema", "update_schema")
-META_KEYS = ("table_name", "api", *EXCLUDE_KEYS, *SCHEMA_KEYS)
+META_KEYS = ("table_name", "api", "permissions", *EXCLUDE_KEYS, *SCHEMA_KEYS)
+PERMISSION_ACTIONS = ("read", "write")
+PERMISSION_LEVELS = ("public", "authenticated", "superuser")
 # Predictable constraint names: a unique violation maps back to its field (409s), and
 # Alembic can diff and drop constraints by name.
 NAMING_CONVENTION = {
@@ -91,6 +93,15 @@ def _read_meta(cls: type) -> dict[str, Any]:
             raise TypeError(
                 f"{cls.__name__}.Meta.{key} must be a pydantic BaseModel subclass, got {schema!r}."
             )
+    permissions = meta.get("permissions", {})
+    where = f"{cls.__name__}.Meta.permissions"
+    if not isinstance(permissions, dict):
+        raise TypeError(f"{where} must be a dict like {{'write': 'superuser'}}, got {permissions!r}.")
+    for action, level in permissions.items():
+        if action not in PERMISSION_ACTIONS:
+            raise TypeError(f"{where}: unknown action {action!r}. Use {', '.join(PERMISSION_ACTIONS)}.")
+        if level not in PERMISSION_LEVELS:
+            raise TypeError(f"{where}: unknown level {level!r}. Use {', '.join(PERMISSION_LEVELS)}.")
     if not isinstance(meta.get("api", True), bool):
         raise TypeError(f"{cls.__name__}.Meta.api must be True or False, got {meta['api']!r}.")
     return meta
@@ -108,6 +119,7 @@ class Model(DeclarativeBase):
     MultipleObjectsReturned: ClassVar[type[db.MultipleObjectsReturned]]
     __fyro_fields__: ClassVar[dict[str, FieldInfo]]
     __fyro_api__: ClassVar[bool]
+    __fyro_permissions__: ClassVar[dict[str, str] | None]
     objects: ClassVar[QuerySet] = Manager()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kw: Any) -> None:
@@ -181,6 +193,7 @@ class Model(DeclarativeBase):
 
         cls.__fyro_fields__ = fields
         cls.__fyro_api__ = meta.get("api", True)
+        cls.__fyro_permissions__ = meta.get("permissions")
         cls.Create, cls.Read, cls.Update = build_schemas(name, hints, fields, meta)
         for error in (db.DoesNotExist, db.MultipleObjectsReturned):
             namespace = {"__module__": cls.__module__, "__qualname__": f"{name}.{error.__name__}"}

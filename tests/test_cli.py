@@ -336,3 +336,77 @@ def test_runserver_does_not_start_on_project_error(project, server):
     install(project, "blog")
     assert_one_line_error(runner.invoke(app, ["runserver"]), "Post.tags")
     assert server.calls == []
+
+
+# --- createsuperuser (phase 8) ---------------------------------------------
+
+
+def auth_project(project) -> None:
+    install(project, "fyro.auth")
+    assert runner.invoke(app, ["makemigrations"]).exit_code == 0
+    assert runner.invoke(app, ["migrate"]).exit_code == 0
+
+
+def users():
+    async def go():
+        engine = create_async_engine(DB_URL, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("SELECT username, email, is_superuser, password FROM auth_user")
+                )
+                return result.all()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
+
+
+@pytest.fixture
+def no_auth_modules():
+    yield
+    for name in list(sys.modules):
+        if name.startswith("fyro.auth"):
+            del sys.modules[name]
+
+
+def test_createsuperuser_noinput_from_environment(project, monkeypatch, no_auth_modules):
+    auth_project(project)
+    monkeypatch.setenv("FYRO_SUPERUSER_USERNAME", "admin")
+    monkeypatch.setenv("FYRO_SUPERUSER_PASSWORD", "s3cret-pass")
+    result = runner.invoke(app, ["createsuperuser", "--noinput"])
+    assert result.exit_code == 0, result.output
+    assert "Superuser 'admin' created." in result.output
+    ((username, email, superuser, password),) = users()
+    assert (username, email, superuser) == ("admin", None, True)
+    assert password.startswith("$argon2id$") and "s3cret-pass" not in password
+
+
+def test_createsuperuser_interactive(project, no_auth_modules):
+    auth_project(project)
+    result = runner.invoke(
+        app, ["createsuperuser"], input="admin\nadmin@example.com\npw-123\npw-123\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "pw-123" not in result.output  # hidden input
+    assert [(u, e, s) for u, e, s, _ in users()] == [("admin", "admin@example.com", True)]
+
+
+def test_createsuperuser_duplicate_is_one_line_error(project, monkeypatch, no_auth_modules):
+    auth_project(project)
+    monkeypatch.setenv("FYRO_SUPERUSER_USERNAME", "admin")
+    monkeypatch.setenv("FYRO_SUPERUSER_PASSWORD", "pw")
+    runner.invoke(app, ["createsuperuser", "--noinput"])
+    assert_one_line_error(runner.invoke(app, ["createsuperuser", "--noinput"]), "'admin'", "exists")
+    assert len(users()) == 1
+
+
+def test_createsuperuser_noinput_without_env_is_error(project, no_auth_modules):
+    auth_project(project)
+    assert_one_line_error(
+        runner.invoke(app, ["createsuperuser", "--noinput"]), "FYRO_SUPERUSER_USERNAME"
+    )
+
+
+def test_createsuperuser_without_fyro_auth_is_error(project):
+    assert_one_line_error(runner.invoke(app, ["createsuperuser", "--noinput"]), "fyro.auth")

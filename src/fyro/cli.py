@@ -1,5 +1,6 @@
 """fyro's command line: `fyro new` plus the project commands that manage.py runs."""
 
+import asyncio
 import contextlib
 import functools
 import importlib.util
@@ -278,6 +279,60 @@ def runserver(
     _warn_unapplied_migrations()
     typer.echo(f"Starting fyro at http://{host}:{port}/docs (Ctrl+C to stop)")
     uvicorn.run("asgi:app", host=host, port=port, reload=reload, app_dir=os.getcwd())
+
+
+@app.command()
+@_friendly_errors
+def createsuperuser(
+    noinput: Annotated[
+        bool,
+        typer.Option(
+            "--noinput",
+            help="Read FYRO_SUPERUSER_USERNAME, FYRO_SUPERUSER_EMAIL and "
+            "FYRO_SUPERUSER_PASSWORD from the environment instead of prompting.",
+        ),
+    ] = False,
+) -> None:
+    """Create a superuser (needs "fyro.auth" in installed_apps)."""
+    _load_project()
+    auth = apps.registry.apps.get("auth")
+    if auth is None or auth.name != "fyro.auth":
+        raise ImproperlyConfigured('createsuperuser needs "fyro.auth" in installed_apps.')
+    if noinput:
+        username = os.environ.get("FYRO_SUPERUSER_USERNAME")
+        password = os.environ.get("FYRO_SUPERUSER_PASSWORD")
+        email = os.environ.get("FYRO_SUPERUSER_EMAIL")
+        if not username or not password:
+            raise ImproperlyConfigured(
+                "--noinput needs FYRO_SUPERUSER_USERNAME and FYRO_SUPERUSER_PASSWORD "
+                "in the environment (not in .env)."
+            )
+    else:
+        username = typer.prompt("Username")
+        email = typer.prompt("Email (optional)", default="", show_default=False)
+        password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
+    asyncio.run(_create_superuser(username, email or None, password))
+    typer.echo(f"Superuser {username!r} created.")
+
+
+async def _create_superuser(username: str, email: str | None, password: str) -> None:
+    import fyro.db
+    from fyro.auth import User
+    from fyro.auth.passwords import hash_password
+    from fyro.db.engine import dispose_engine
+
+    try:
+        async with fyro.db.session():
+            if await User.objects.filter(username=username).first() is not None:
+                raise ImproperlyConfigured(f"User {username!r} already exists.")
+            await User.objects.create(
+                username=username,
+                email=email,
+                password=hash_password(password),
+                is_superuser=True,
+            )
+    finally:
+        await dispose_engine()
 
 
 def _warn_unapplied_migrations() -> None:

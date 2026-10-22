@@ -1,3 +1,4 @@
+import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,6 +13,8 @@ from fyro.crud import build_router
 from fyro.db.engine import dispose_engine, get_engine
 from fyro.db.session import SessionMiddleware
 from fyro.models.base import _snake
+
+logger = logging.getLogger("fyro")
 
 
 @asynccontextmanager
@@ -41,9 +44,26 @@ def _check_duplicate_routes(app: FastAPI) -> None:
             seen[method, shape] = where
 
 
+def _check_auth(auth_installed: bool) -> None:
+    if auth_installed:
+        return
+    models = [m for a in apps.registry.apps.values() for m in a.models.values() if m.__fyro_api__]
+    secured = sorted(m.__name__ for m in models if m.__fyro_permissions__)
+    if secured:
+        raise ImproperlyConfigured(
+            f"{', '.join(secured)} set Meta.permissions, which needs \"fyro.auth\" in "
+            "installed_apps."
+        )
+    if models and not get_settings().debug:
+        logger.warning("API writes are open to anyone; add fyro.auth to installed_apps.")
+
+
 def create_app() -> FastAPI:
     """Load installed apps and build the FastAPI app."""
     apps.registry.populate(get_settings().installed_apps)
+    auth = apps.registry.apps.get("auth")
+    auth_installed = auth is not None and auth.name == "fyro.auth"
+    _check_auth(auth_installed)
     app = FastAPI(lifespan=_lifespan)
     app.add_middleware(SessionMiddleware)
     app.add_exception_handler(db.DoesNotExist, _not_found)
@@ -56,7 +76,7 @@ def create_app() -> FastAPI:
             if model.__fyro_api__:
                 segment = _snake(model.__name__)
                 app.include_router(
-                    build_router(model),
+                    build_router(model, auth_installed),
                     prefix=f"{prefix}/{segment}",
                     tags=[f"{app_config.label}.{segment}"],
                 )

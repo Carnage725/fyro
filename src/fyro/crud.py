@@ -1,6 +1,7 @@
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import create_model
 from sqlalchemy.exc import IntegrityError
 
@@ -23,7 +24,24 @@ def _conflict(model: Any, error: IntegrityError) -> HTTPException:
     return HTTPException(409, f"{model.__name__} with {what} already exists.")
 
 
-def build_router(model: Any) -> APIRouter:
+def _guard(level: str) -> Callable[[Request], Awaitable[None]]:
+    """Dependency enforcing a permission level. It runs before the endpoint loads the row, so a
+    caller who may not see the model gets 401/403 even for ids that don't exist."""
+
+    async def check(request: Request) -> None:
+        if level == "public":
+            return
+        # Imported here: fyro.auth is only importable when it is installed.
+        from fyro.auth.sessions import current_user
+
+        user = await current_user(request)
+        if level == "superuser" and not user.is_superuser:
+            raise HTTPException(403, "You do not have permission to do this.")
+
+    return check
+
+
+def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
     """List, get, create, patch and delete routes for one model, mounted by create_app()."""
     name = model.__name__
     primary_key = list(model.__table__.primary_key.columns)
@@ -93,11 +111,24 @@ def build_router(model: Any) -> APIRouter:
         endpoint.__qualname__ = f"{name}.{action}"
         endpoint.__name__ = f"{action}_{name}"
 
+    # Defaults with fyro.auth: anyone reads, logged-in users write. Without it, all public.
+    levels = {"read": "public", "write": "authenticated" if auth_installed else "public"}
+    levels |= model.__fyro_permissions__ or {}
+    can_read = [Depends(_guard(levels["read"]))]
+    can_write = [Depends(_guard(levels["write"]))]
+
     router = APIRouter()
     item = f"/{{{pk}}}"
-    router.add_api_route("", list_, methods=["GET"], response_model=Page)
-    router.add_api_route("", create, methods=["POST"], response_model=Read, status_code=201)
-    router.add_api_route(item, get, methods=["GET"], response_model=Read)
-    router.add_api_route(item, update, methods=["PATCH"], response_model=Read)
-    router.add_api_route(item, delete, methods=["DELETE"], status_code=204, response_class=Response)
+    router.add_api_route("", list_, methods=["GET"], response_model=Page, dependencies=can_read)
+    router.add_api_route(
+        "", create, methods=["POST"], response_model=Read, status_code=201, dependencies=can_write
+    )
+    router.add_api_route(item, get, methods=["GET"], response_model=Read, dependencies=can_read)
+    router.add_api_route(
+        item, update, methods=["PATCH"], response_model=Read, dependencies=can_write
+    )
+    router.add_api_route(
+        item, delete, methods=["DELETE"], status_code=204, response_class=Response,
+        dependencies=can_write,
+    )
     return router

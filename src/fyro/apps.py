@@ -44,6 +44,9 @@ class Registry:
         """Import every installed app's modules. Runs once; later calls do nothing."""
         if self._loaded:
             return
+        # Three passes, as Django does: every app is recorded before any models.py runs,
+        # and every models.py runs before any routes.py, so apps may import each other
+        # (blog/routes.py importing fyro.auth) in any installed_apps order.
         for name in installed_apps:
             label = name.rsplit(".", 1)[-1]
             if label in self._apps:
@@ -51,29 +54,31 @@ class Registry:
                     f"Apps {self._apps[label].name!r} and {name!r} share the label {label!r}. "
                     "App labels (last part of the dotted path) must be unique: rename one app."
                 )
+            # Recorded before the package import, so a package whose __init__ imports its
+            # own models (fyro.auth) can register them.
+            self._apps[label] = AppConfig(name=name, label=label)
             if _import_optional(name) is None:
+                del self._apps[label]
                 raise ImproperlyConfigured(
                     f"Installed app {name!r} cannot be imported. "
                     "Check the name in installed_apps and that the app is on sys.path."
                 )
-            # Registered before importing models so models can register themselves.
-            app = self._apps[label] = AppConfig(name=name, label=label)
-
-            app.models_module = _import_optional(f"{name}.models")
+        for app in self._apps.values():
+            app.models_module = _import_optional(f"{app.name}.models")
             if app.models_module is None:
                 raise ImproperlyConfigured(
-                    f"App {name!r} has no models.py. Create {app.path}/models.py (it may be empty)."
+                    f"App {app.name!r} has no models.py. "
+                    f"Create {app.path}/models.py (it may be empty)."
                 )
-
-            app.routes_module = _import_optional(f"{name}.routes")
+        for app in self._apps.values():
+            app.routes_module = _import_optional(f"{app.name}.routes")
             if app.routes_module is not None and not isinstance(
                 getattr(app.routes_module, "router", None), APIRouter
             ):
                 raise ImproperlyConfigured(
                     f"{app.path}/routes.py must define `router = APIRouter()`."
                 )
-
-            app.admin_module = _import_optional(f"{name}.admin")
+            app.admin_module = _import_optional(f"{app.name}.admin")
         self._loaded = True
 
     def register_model(self, app_label: str, model_cls: type) -> None:
