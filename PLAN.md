@@ -1,6 +1,6 @@
 # fyro: Build Plan
 
-> **Status: FINAL (v0.1 plan).** Approved. Phases 4 to 10 get detailed after the Phase 3 gate.
+> **Status: FINAL (v0.1 plan).** Phases 0 to 4 are built and their gates passed. Phase 5 is detailed in `BUILD_PROMPT.md`. Phases 6 to 10 get detailed after the Phase 5 gate.
 
 ## Goal
 
@@ -28,10 +28,13 @@ A Django-feeling framework on top of FastAPI. One model class produces the table
 | Table name | `<app_label>_<model_snake>`, e.g. `blog_post`. `Meta.table_name` overrides. |
 | Escape hatch | `Meta` tweaks (`create_exclude`, `read_exclude`, `update_exclude`) plus full replace (`create_schema`, `read_schema`, `update_schema`) |
 | Query API | Django-style async manager: `await Post.objects.filter(title="x").all()`. Session comes from a request-scoped contextvar. |
-| Engine seam | The manager calls `engine.fetch(query) -> rows`. Python now, Rust (PyO3/maturin) later, with an identical API. |
+| Engine seam | The manager only calls `engine.fetch(stmt) -> list` (rows/scalars) and `engine.execute(stmt) -> int` (rowcount). Python now, Rust (PyO3/maturin) later, with an identical API. |
+| Update schema | Strict: every field defaults to `None`, but the annotation stays `T`. An explicit `null` on a NOT NULL column is rejected. (Phase 3 gate) |
+| Defaults | Scalar defaults are Python-side only (`mapped_column(default=...)`). No `server_default`. (Phase 3 gate) |
+| Not found | `create_app()` turns `fyro.db.DoesNotExist` into a 404 on every route, including hand-written ones. (Phase 4 gate) |
 | Migrations | One Alembic history in `<project>/migrations/`, wrapped by `makemigrations` / `migrate` |
 | Test DB | `docker compose` Postgres |
-| Plan depth | Phases 0 to 3 in detail. Phases 4 to 10 outlined and refined after the phase 3 gate. |
+| Plan depth | Each phase is detailed in `BUILD_PROMPT.md` only after the previous phase's gate passes. |
 
 ## North star: the user experience we are building toward
 
@@ -183,7 +186,7 @@ class Post(Model):
 - Unknown `Meta` keys or excluded field names that don't exist are errors.
 - `read_only` and `write_only` both set on one field is an error.
 
-**Mechanism (spike first):** a hook (`__init_subclass__` if sufficient, metaclass only if needed) on a `DeclarativeBase` subclass. It rewrites plain annotations into `Mapped[T]` + `mapped_column(...)` before SQLAlchemy maps the class. It then generates the schemas with `pydantic.create_model`. It stores the field flags in the registry and leaves room for `.objects` (phase 4).
+**Mechanism (built):** `__init_subclass__` on a `DeclarativeBase` subclass (no metaclass needed). It rewrites plain annotations into `Mapped[T]` + `mapped_column(...)` before SQLAlchemy maps the class. It then generates the schemas with `pydantic.create_model`. It stores the field flags in the registry and leaves room for `.objects` (phase 4).
 
 **Steps and checks**
 1. **Spike:** prove that plain annotations can be rewritten to `Mapped` before SA mapping, with one throwaway test. Verify: `Post.__table__` has the right columns, types and nullability. If the spike fails, stop and report options.
@@ -195,10 +198,20 @@ class Post(Model):
 
 ---
 
-## Phases 4 to 10: outline (detailed after the phase 3 gate)
+## Phase 4: Engine, session and `Model.objects` (built)
 
-4. **Engine + session**: `Engine` protocol (`fetch(query) -> rows`), SQLAlchemy async implementation, engine created in FastAPI `lifespan`, session per request in a contextvar, `async with fyro.db.session()` for scripts, and the `Model.objects` manager (`filter`, `exclude`, `order_by`, `limit`, `offset`, `all`, `get`, `first`, `count`, `create`, `update`, `delete`).
-5. **Auto CRUD**: per-model router at `/api/<app>/<model>` with list (field filters, limit/offset, total count), get, create, patch and delete. It shows in OpenAPI and can be opted out of via `Meta.api = False`. A custom route that duplicates a CRUD method+path is a startup error naming both. **This is the demo gate.**
+Full spec: `BUILD_PROMPT.md`, Phase 4 prompt. Summary:
+- `Engine` protocol with `fetch(stmt) -> list` and `execute(stmt) -> int`. `SQLAlchemyEngine` is the only implementation.
+- `fyro.db.get_engine()` is lazy and cached. `create_app()` adds a `lifespan` that disposes the engine on shutdown.
+- A pure ASGI middleware opens one session per request in a contextvar. It commits before the response starts and rolls back on exception.
+- `async with fyro.db.session():` for scripts and tests. Nested sessions reuse the outer one.
+- `Model.objects` manager: `filter`, `exclude`, `order_by`, `limit`, `offset`, `all`, `get`, `first`, `count`, `create`, `update`, `delete`. Equality lookups only. Per-model `DoesNotExist` / `MultipleObjectsReturned`.
+
+---
+
+## Phases 5 to 10: outline
+
+5. **Auto CRUD** (detailed in `BUILD_PROMPT.md`): per-model router at `/api/<app>/<model>` with list (field filters, limit/offset, total count), get, create, patch and delete. It shows in OpenAPI and can be opted out of via `Meta.api = False`. A custom route that duplicates a CRUD method+path is a startup error naming both. **This is the demo gate.**
 6. **Migrations**: Alembic, async `env.py`, one history per project, `target_metadata` from the registry. Spike: `Config` without `alembic.ini`. Renames show up as drop + add, and this is documented.
 7. **CLI** (Typer): `new` (also writes `.env` with a `fyro-insecure-` secret key and a `.gitignore` containing `.env`), `startapp`, `runserver` (uvicorn), `makemigrations`, `migrate`, `createsuperuser`. Verify with a scripted end-to-end run of the 10-minute test.
 8. **Auth**: built-in `fyro.auth` app, `User` model, password hashing, session + JWT login, per-model permissions (`Meta.permissions`).
@@ -208,3 +221,8 @@ class Post(Model):
 ## Not building (v0.1)
 
 WebSocket admin, OAuth, rate limiting, CSRF extras, background tasks, signals, auto-mocked tests, relations, multiple databases.
+
+## fancy features off the top of my head in the far future
+1. a fancy looking cli???
+2. super easy commands to like running a dev server, maybe even a deploy command?
+3. a open source marketplace for 3rd party packages?? like django currently has?

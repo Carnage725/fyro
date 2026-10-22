@@ -1,6 +1,6 @@
 # fyro: Build Prompts
 
-> **Status: FINAL (v0.1, Phases 0 to 4). Phase 5: DRAFT, not yet approved.**
+> **Status: FINAL (v0.1, Phases 0 to 5).**
 > How to use: paste the **Master prompt** at the start of every build session, then paste exactly **one** phase prompt. One phase per session.
 
 ---
@@ -9,7 +9,7 @@
 
 You are building **fyro**, a web framework on top of FastAPI that feels like Django. FastAPI is the engine. fyro adds project structure, a single-source Model class, a hidden DB session, auto CRUD, migrations, a CLI, auth and an admin.
 
-Read `idea.md` and `PLAN.md` before doing anything. `PLAN.md` "Locked decisions" are final. Do not change them. If one blocks you, stop and ask.
+Read `IDEA.md` and `PLAN.md` before doing anything. `PLAN.md` "Locked decisions" are final. Do not change them. If one blocks you, stop and ask.
 
 **Rules**
 - The API is the product. Match the public API in `PLAN.md` exactly.
@@ -168,9 +168,7 @@ async with fyro.db.session():   # scripts / tests: commit on clean exit, rollbac
 
 ---
 
-## Phase 5 prompt: Auto CRUD (DRAFT)
-
-> **DRAFT.** This prompt has not been approved yet. Review the "Open decisions" at the end before running it.
+## Phase 5 prompt: Auto CRUD
 
 Execute **Phase 5** of `PLAN.md` ("Auto CRUD"). **This is the demo gate.** The Phase 4 gate passed with one decision for this phase: `create_app()` turns `fyro.db.DoesNotExist` into a 404 for **every** route, including hand-written ones.
 
@@ -197,20 +195,23 @@ The routes for `Post`. `<pk>` is named after the primary key field (`id` by defa
 
 | Method and path | Input | Output |
 |---|---|---|
-| `GET /api/blog/post` | query: one equality filter per readable field, plus `limit` (default 20, max 100) and `offset` (default 0) | `200 {"items": [Post.Read], "total": int, "limit": int, "offset": int}`, ordered by pk |
+| `GET /api/blog/post` | query: one equality filter per readable field, plus `limit` (default 50, max 100; above 100 is a 422, not silently capped) and `offset` (default 0) | `200 {"items": [Post.Read], "total": int, "limit": int, "offset": int}`, ordered by pk |
 | `GET /api/blog/post/{id}` | | `200 Post.Read`, or `404` |
-| `POST /api/blog/post` | body `Post.Create` | `201 Post.Read` |
-| `PATCH /api/blog/post/{id}` | body `Post.Update`, applied with `exclude_unset=True` | `200 Post.Read`, or `404` |
+| `POST /api/blog/post` | body `Post.Create` | `201 Post.Read`, or `409` on a duplicate unique value |
+| `PATCH /api/blog/post/{id}` | body `Post.Update`, applied with `exclude_unset=True` | `200 Post.Read`, `404`, or `409` on a duplicate unique value |
 | `DELETE /api/blog/post/{id}` | | `204`, or `404` |
 
 **Rules**
-- **Path.** The model path segment is the snake_case class name: `Post` gives `post` and `BlogPost` gives `blog_post`. It reuses `_snake` from `fyro/models/base.py`.
+- **Path.** The model path segment is the snake_case class name: `Post` gives `post` and `BlogPost` gives `blog_post`. This is the same rule as table names, so one naming rule covers the framework. It reuses `_snake` from `fyro/models/base.py`. (Django/DRF would give `blogpost`; fyro deliberately does not.)
 - **Filters.**
   - Only fields in `Post.Read` can be filtered. `write_only` fields never become query params, so they cannot be probed.
   - Each filter is optional and typed from the field.
   - Unknown query params are ignored (FastAPI default).
   - `total` counts the filtered rows, ignoring `limit` and `offset`.
 - **Responses** always go through `Post.Read`, so `write_only` fields never leak, including from `POST` and `PATCH`.
+- **Path param.** It is named after the primary key field (`{id}` by default, `{slug}` for `slug: str = Field(primary_key=True)`), not a generic `{pk}`. `Post.objects.get(id=1)` and `/post/{id}` use the same name, and OpenAPI shows the real field.
+- **List shape.** `{items, total, limit, offset}` matches fastapi-pagination's limit/offset page.
+- **Unique violations.** On `POST` and `PATCH` only, catch SQLAlchemy `IntegrityError` whose driver error is a unique violation (SQLSTATE `23505`). Return `409 {"detail": "Post with this <field> already exists."}`. Find `<field>` by matching the violated constraint name to the table's unique constraints and indexes, and fall back to "these values". Other database errors stay 500. The session is aborted, so the 409 (status >= 400) makes the Phase 4 middleware roll back.
 - **Writes** use `Post.objects` only. The Phase 4 middleware commits. `PATCH` with an empty body returns the row unchanged.
 - **Opting out.** `Meta.api = False` skips the CRUD router. Add `api` to the allowed `Meta` keys in `fyro/models/base.py`. A non-bool value raises `TypeError`.
 - **Composite keys.** A model with more than one `primary_key` field and `api` not set to `False` raises `ImproperlyConfigured` at `create_app()`. It names the model and says to set `Meta.api = False`.
@@ -223,6 +224,7 @@ The routes for `Post`. `<pk>` is named after the primary key field (`id` by defa
 
 **Steps and checks**
 1. Check the current docs:
+   - asyncpg `UniqueViolationError` (`constraint_name`, SQLSTATE `23505`) as wrapped by SQLAlchemy `IntegrityError.orig`;
    - FastAPI query parameter models (`Annotated[Model, Query()]`) or dynamic dependencies for typed filters;
    - `response_model`, `status_code=204`;
    - exception handlers;
@@ -231,6 +233,7 @@ The routes for `Post`. `<pk>` is named after the primary key field (`id` by defa
    - each endpoint's happy path and 404;
    - filters, `limit`/`offset`/`total`, and `limit` over 100 giving 422;
    - no `write_only` in any response, and no `write_only` query param;
+   - `POST` and `PATCH` with a duplicate unique value giving 409 with the field name, and the row unchanged;
    - `PATCH` with partial data, an empty body, and an explicit `null` on a NOT NULL field giving 422;
    - `Meta.api = False`;
    - the composite pk error;
@@ -249,13 +252,7 @@ The routes for `Post`. `<pk>` is named after the primary key field (`id` by defa
 - ordering and search query params;
 - lookups beyond equality;
 - auth and permissions (Phase 8);
-- unique-violation handling (an `IntegrityError` is still a 500).
-
-**Open decisions (confirm before running):**
-1. The list response shape `{items, total, limit, offset}` and the defaults (`limit` 20, max 100).
-2. The path uses snake_case (`blog_post`) rather than the lowercase class name (`blogpost`).
-3. The path param is named after the pk field (`{id}`), not a generic `{pk}`.
-4. Unique-constraint violations stay 500 for now. The alternative is a 409 now.
+- mapping other database errors (foreign key, check), which stay 500.
 
 ---
 
