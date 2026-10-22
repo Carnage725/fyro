@@ -64,3 +64,7 @@ How tests are written and attacked is described in [`test.md`](test.md).
 ## License
 
 [MIT](LICENSE). The admin bundles [htmx](https://htmx.org) (0BSD) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (OFL-1.1); their licenses are in `src/fyro/admin/static/`.
+
+
+NOTE:
+this is a work in progress, i am a fresher. pls be nice. and also credits to all the people who developed the underlying tech.
