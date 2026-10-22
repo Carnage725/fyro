@@ -1,6 +1,6 @@
 # fyro: Build Prompts
 
-> **Status: FINAL (v0.1, Phases 0 to 8, plus the Phase 6.1 fix).**
+> **Status: FINAL (v0.1, Phases 0 to 9, plus the Phase 6.1 fix).**
 > How to use: paste the **Master prompt** at the start of every build session, then paste exactly **one** phase prompt. One phase per session.
 
 ---
@@ -665,6 +665,159 @@ python manage.py createsuperuser                              # prompts; --noinp
 
 ---
 
-## Phases 9 to 10 prompts
+## Phase 9 prompt: Admin
 
-Written after the Phase 8 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
+Execute **Phase 9** of `PLAN.md` ("Admin"). The Phase 8 gate passed: `fyro.auth` provides superusers, database-backed session cookies, the CSRF header rule (HTMX sends `HX-Request` on every request) and `Meta.permissions`.
+
+**Goal:** a superuser opens `/admin`, logs in, and can browse, search, sort, filter, add, edit and delete every model's rows. Users are managed there too. No admin code is written in the project.
+
+**Decided with the user (Phase 9 planning):**
+1. **Every model appears automatically**, grouped by app. `Meta.admin = False` hides one. `auth.Session` is hidden. `auth.User` is shown even though it has `Meta.api = False`.
+2. **Look: clean, modern and minimal.**
+   - A left sidebar of apps and their models.
+   - A content area with a title, `+ Add`, a search box, a table and pagination.
+   - Neutral greys, the system font stack and roomy rows.
+   - Light and dark mode via `prefers-color-scheme`.
+   - One small hand-written CSS file shipped in the package. No CSS framework.
+   ```
+   +------------+-------------------------------------+
+   | fyro admin |  Blog / Posts            [+ Add]    |
+   |------------|  [ search...          ]             |
+   | BLOG       |  ID  TITLE          PUBLISHED       |
+   |  Posts  <  |  3   Live           yes        Edit |
+   |  Secrets   |  2   Draft          no         Edit |
+   | AUTH       |  1   Hello fyro     yes        Edit |
+   |  Users     |            < 1 2 3 >                |
+   +------------+-------------------------------------+
+   ```
+3. **Features:**
+   - list (paginated);
+   - search;
+   - **sorting** by clicking a column header;
+   - **filters** in a sidebar for bool and Enum fields;
+   - **add**;
+   - edit;
+   - delete with a confirm step;
+   - **bulk delete** (checkboxes plus a confirm page);
+   - **user management** (create users, set passwords, toggle active and superuser).
+4. **Search and sort join the public API**, so "the admin consumes the generated API" stays true:
+   - `GET /api/<app>/<model>?search=<text>` is a case-insensitive *contains* (`ILIKE`, with `%` and `_` escaped) over `Meta.search_fields`. The default is every readable `str` field.
+   - `?order_by=<field>` or `-<field>` sorts on any readable field. An unknown field is a 422.
+
+   Both work with the existing filters, `limit`/`offset` and `total`.
+
+**Architecture**
+- **Server-rendered HTML, with HTMX for partial updates.**
+  - Admin routes render Jinja2 templates.
+  - They read and write through the **same code paths as auto CRUD**: the query building (filters, search, order, paging) is factored out of `crud.py` into shared functions, with the same `Model.Create`/`Model.Update` validation and the same `Model.objects`.
+  - The admin does not call its own JSON API over HTTP.
+- **Static files.** `htmx.min.js` is vendored into the package at an exact version, with its license kept. Nothing loads from a CDN. The admin works offline and with no Node.
+- **Access.**
+  - The admin is mounted at `/admin` only when `fyro.auth` is installed.
+  - It is for superusers only. An anonymous visitor is redirected to `/admin/login?next=...`, and a logged-in non-superuser gets a 403 page.
+  - The login form reuses the Phase 8 login logic: the same 401 message and the same dummy-hash timing. It sets the same session cookie.
+  - Logout is an `hx-post`.
+- **CSRF.** Every write is an HTMX request (`hx-post`/`hx-delete`), so it carries `HX-Request` and passes the Phase 8 check. Plain non-HTMX form posts to write endpoints are rejected by design.
+- **Security headers** on every admin response:
+  - `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, with no inline scripts (htmx's injected indicator styles are turned off via the `htmx-config` meta tag);
+  - `X-Frame-Options: DENY`;
+  - `Referrer-Policy: same-origin`;
+  - Jinja autoescaping always on, so values that look like stored XSS render as text.
+- **Forms**, with widgets from the field types:
+
+  | Field type | Widget |
+  |---|---|
+  | `str` with `max_length` | text input |
+  | `str` without `max_length` | textarea |
+  | `bool` | checkbox |
+  | `int`, `float`, `Decimal` | number input |
+  | `date` | date input |
+  | `datetime` | datetime-local input |
+  | `UUID` | text input |
+  | `Enum` | select |
+  | `T \| None` | an empty value means `None` |
+
+  - `read_only` fields are shown as text and are never submitted. `write_only` fields never show their value.
+  - Validation errors (422) re-render the form with messages beside each field.
+  - A unique violation shows "already exists" beside that field.
+- **Users.**
+  - The add form has a password field and a confirm field, and the password is hashed with Argon2.
+  - The edit form has an optional "set new password" field, and never shows the hash.
+  - Changing a password, or deactivating a user, **deletes that user's sessions** (OWASP: new sessions after a privilege change).
+  - A superuser cannot delete, deactivate or remove superuser from **themselves**.
+- **Lists:**
+  - 50 rows per page, with numbered pagination;
+  - columns from `Meta.list_display` (default: up to 6 readable fields, pk first);
+  - bool shown as yes/no;
+  - datetimes as ISO in UTC.
+  - Search, sorting, filters and paging update the table through `hx-get` with `hx-push-url`, so the back button and shared links work.
+
+**Layout:**
+- `src/fyro/admin/` holds:
+  - `__init__.py`;
+  - `routes.py`;
+  - `forms.py` (field to widget, form data to schema);
+  - `templates/` (`base.html`, `index.html`, `list.html`, `_table.html`, `form.html`, `confirm_delete.html`, `login.html`, `forbidden.html`);
+  - `static/` (`admin.css`, `htmx.min.js`, its license).
+- `src/fyro/crud.py` is refactored so the query logic is shared, and gains `search`/`order_by`.
+- `src/fyro/models/base.py` gains the `Meta` keys `admin`, `list_display` and `search_fields`.
+- `src/fyro/app.py` mounts the admin.
+- `jinja2` is already a dependency.
+
+**Steps and checks**
+1. Check the current docs:
+   - Starlette `Jinja2Templates` and `StaticFiles` (package-relative directories);
+   - htmx 2.x (`hx-get`, `hx-post`, `hx-delete`, `hx-push-url`, `hx-confirm`, `htmx-config`, which headers it sends);
+   - MDN on CSP and `frame-ancestors`;
+   - SQLAlchemy `ilike` with an `escape`;
+   - `uv_build` package data for `templates/` and `static/`.
+2. **Spike.** Prove four things:
+   - templates and static files load from inside the installed package, and a built wheel contains them;
+   - htmx works under the strict CSP, with no console errors;
+   - an `hx-post` carries `HX-Request` and passes the Phase 8 CSRF check;
+   - an `ILIKE` search escapes `%` and `_`.
+
+   **Stop and report.**
+3. Write failing tests. HTML is checked with the stdlib `html.parser`, so no new test dependencies are needed. Cover:
+   - **Access:** anonymous gets a redirect, a non-superuser gets 403, a superuser gets 200, and the admin is absent without `fyro.auth`.
+   - **Listing:** every model is listed except `Meta.admin = False` and `Session`.
+   - **List behavior:** search (including a literal `%`), sort both ways, bool and enum filters, pagination.
+   - **Writes:** add, edit, delete and bulk delete with a confirm step, each checked by reading Postgres.
+   - **Form errors:** validation errors shown inline; a unique conflict shown on its field.
+   - **Users:** user create, password set (hashed, and the old sessions deleted), deactivate (sessions deleted), and the self-protection rules.
+   - **CSRF:** a write without `HX-Request` gets 403.
+   - **Escaping:** stored `<script>` renders escaped.
+   - **Headers:** the security headers are present on every admin page.
+   - **API:** `?search=`/`?order_by=` work, including a 422 on an unknown `order_by`, with Phase 5 behavior otherwise unchanged.
+4. Implement. Check: all tests pass (Phases 0 to 8 still green) and `uv run ruff check` is clean.
+5. **Gate.** Use a scratch project with `fyro.auth` and `blog` under `runserver`.
+   - Drive the admin in a real browser and capture screenshots: login, the model list, search, sort and filter, add, an edit with a validation error, bulk delete, user create, and a password change.
+   - Show light and dark mode.
+
+   **Stop and ask the user to approve before Phase 10.**
+
+**Out of scope:**
+- relation pickers (v0.2);
+- inline editing;
+- history and audit log;
+- CSV import and export;
+- file uploads;
+- custom admin actions;
+- per-object permissions;
+- non-superuser staff roles;
+- admin themes and options;
+- i18n.
+
+**Also decided (Phase 9 planning, the user agreed to every recommendation):**
+1. **Customization through `Meta` keys** (`admin`, `list_display`, `search_fields`), so one class stays the single place to configure a model. Per-app `admin.py` is left for later.
+2. **No `fyro.auth`:** the admin is not mounted, and a startup log line says why.
+3. **Self-protection:** a superuser cannot delete, deactivate or un-superuser themselves.
+4. **Bulk delete** covers only the rows selected on the current page.
+5. **Changing a user's password or deactivating them deletes all their sessions.**
+6. **Font: JetBrains Mono** (user request at the gate), bundled as one variable `woff2` (Latin subset, OFL-1.1, from `@fontsource-variable/jetbrains-mono` 5.3.0, checked against the npm checksum). It is not loaded from Google Fonts, because the CSP allows only `'self'`.
+7. **`User.email` has `max_length=254`** (RFC 5321), found at the gate: without a length the admin showed it as a textarea.
+---
+
+## Phase 10 prompt
+
+Written after the Phase 9 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
