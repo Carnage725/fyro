@@ -29,7 +29,16 @@ COLUMN_TYPES: dict[Any, Any] = {
 SUPPORTED = "int, str, bool, float, Decimal, datetime, date, UUID, Enum, or any of these | None"
 EXCLUDE_KEYS = ("create_exclude", "read_exclude", "update_exclude")
 SCHEMA_KEYS = ("create_schema", "read_schema", "update_schema")
-META_KEYS = ("table_name", *EXCLUDE_KEYS, *SCHEMA_KEYS)
+META_KEYS = ("table_name", "api", *EXCLUDE_KEYS, *SCHEMA_KEYS)
+# Predictable constraint names: a unique violation maps back to its field (409s), and
+# Alembic can diff and drop constraints by name.
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
 
 
 def _snake(name: str) -> str:
@@ -75,11 +84,15 @@ def _read_meta(cls: type) -> dict[str, Any]:
             raise TypeError(
                 f"{cls.__name__}.Meta.{key} must be a pydantic BaseModel subclass, got {schema!r}."
             )
+    if not isinstance(meta.get("api", True), bool):
+        raise TypeError(f"{cls.__name__}.Meta.api must be True or False, got {meta['api']!r}.")
     return meta
 
 
 class Model(DeclarativeBase):
     """Base class for fyro models. One class gives a table plus Create/Read/Update schemas."""
+
+    metadata = sa.MetaData(naming_convention=NAMING_CONVENTION)
 
     Create: ClassVar[type[BaseModel]]
     Read: ClassVar[type[BaseModel]]
@@ -87,6 +100,7 @@ class Model(DeclarativeBase):
     DoesNotExist: ClassVar[type[db.DoesNotExist]]
     MultipleObjectsReturned: ClassVar[type[db.MultipleObjectsReturned]]
     __fyro_fields__: ClassVar[dict[str, FieldInfo]]
+    __fyro_api__: ClassVar[bool]
     objects: ClassVar[QuerySet] = Manager()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kw: Any) -> None:
@@ -159,6 +173,7 @@ class Model(DeclarativeBase):
         super().__init_subclass__(**kw)
 
         cls.__fyro_fields__ = fields
+        cls.__fyro_api__ = meta.get("api", True)
         cls.Create, cls.Read, cls.Update = build_schemas(name, hints, fields, meta)
         for error in (db.DoesNotExist, db.MultipleObjectsReturned):
             namespace = {"__module__": cls.__module__, "__qualname__": f"{name}.{error.__name__}"}
