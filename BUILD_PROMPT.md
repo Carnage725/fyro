@@ -498,13 +498,14 @@ class Post(Model):
         permissions = {"read": "public", "write": "superuser"}   # optional; see defaults below
 
 # blog/routes.py: a hand-written route that needs a user
+from typing import Annotated
 from fastapi import APIRouter, Depends
 from fyro.auth import User, current_user
 
 router = APIRouter()
 
 @router.get("/mine")
-async def mine(user: User = Depends(current_user)):   # 401 when not logged in
+async def mine(user: Annotated[User, Depends(current_user)]):   # 401 when not logged in
     ...
 ```
 
@@ -533,6 +534,7 @@ python manage.py createsuperuser                              # prompts; --noinp
 6. **Login by username** (Django's default). `email` is optional and not unique. There is no custom user model in v0.1, so this choice sticks.
 
 **Rules**
+- **Loader change (found by the spike):** `apps.registry.populate` loads in three passes, as Django does. First it records every app and imports its package, then it runs every `models.py`, then every `routes.py`/`admin.py`. Apps can then import each other (for example `blog/routes.py` importing `fyro.auth`) in any `installed_apps` order.
 - **`fyro.auth` is an ordinary installed app inside the fyro package.** Its label is `auth`, its tables are `auth_user` and `auth_session`, and they go into the project's single migration history. Install order in `installed_apps` does not matter.
 - **`User`:**
   - `username: str` (unique, max 150, compared exactly, case-sensitive as in Django);
@@ -552,10 +554,11 @@ python manage.py createsuperuser                              # prompts; --noinp
   `Meta.api = False`.
 - **Tokens:**
   - `secrets.token_urlsafe(32)`, created fresh at every login, which also prevents session fixation.
-  - The lifetime is 14 days (Django's `SESSION_COOKIE_AGE`), as a constant in v0.1.
-  - An expired session is deleted when it is next used and gives 401.
+  - The lifetime is 14 days absolute (Django's `SESSION_COOKIE_AGE`), plus a **2-hour idle timeout** (OWASP asks for both; decided at the spike).
+  - `last_seen` is written at most once per minute.
+  - Both limits are enforced server-side, and an expired or idle session gives 401.
   - Cleaning up expired sessions in bulk is deferred.
-- **Cookie:** `fyro_session`, with:
+- **Cookie:** `__Host-fyro_session` when debug is off (browser-enforced `Secure`, no `Domain`, `Path=/`; decided at the spike), and `fyro_session` in debug so `http://localhost` works. Flags:
   - `HttpOnly`;
   - `SameSite=Lax`;
   - `Secure` unless `debug`;
