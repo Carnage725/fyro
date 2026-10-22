@@ -31,6 +31,8 @@ A Django-feeling framework on top of FastAPI. One model class produces the table
 | Engine seam | The manager only calls `engine.fetch(stmt) -> list` (rows/scalars) and `engine.execute(stmt) -> int` (rowcount). Python now, Rust (PyO3/maturin) later, with an identical API. |
 | Update schema | Strict: every field defaults to `None`, but the annotation stays `T`. An explicit `null` on a NOT NULL column is rejected. (Phase 3 gate) |
 | Defaults | Scalar defaults are Python-side only (`mapped_column(default=...)`). No `server_default`. (Phase 3 gate) |
+| Enums | Stored as VARCHAR(255) holding the member value (`native_enum=False`), not Postgres `ENUM` types. No CHECK constraint; Pydantic validates. (Phase 6 decision) |
+| Migration files | Hidden `env.py` inside fyro; Alembic hex revision ids with date-prefixed file names; one `migrate(target)` that moves up or down, `"zero"` = empty. (Phase 6 decision) |
 | Not found | `create_app()` turns `fyro.db.DoesNotExist` into a 404 on every route, including hand-written ones. (Phase 4 gate) |
 | Migrations | One Alembic history in `<project>/migrations/`, wrapped by `makemigrations` / `migrate` |
 | Test DB | `docker compose` Postgres |
@@ -226,3 +228,4 @@ WebSocket admin, OAuth, rate limiting, CSRF extras, background tasks, signals, a
 1. a fancy looking cli???
 2. super easy commands to like running a dev server, maybe even a deploy command?
 3. a open source marketplace for 3rd party packages?? like django currently has?
+4. mcp for this project so llm can build at light speed or something?

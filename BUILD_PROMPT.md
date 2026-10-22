@@ -1,6 +1,6 @@
 # fyro: Build Prompts
 
-> **Status: FINAL (v0.1, Phases 0 to 5).**
+> **Status: FINAL (v0.1, Phases 0 to 6).**
 > How to use: paste the **Master prompt** at the start of every build session, then paste exactly **one** phase prompt. One phase per session.
 
 ---
@@ -256,6 +256,123 @@ The routes for `Post`. `<pk>` is named after the primary key field (`id` by defa
 
 ---
 
-## Phases 6 to 10 prompts
+## Phase 6 prompt: Migrations
 
-Written after the Phase 5 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
+Execute **Phase 6** of `PLAN.md` ("Migrations"). The Phase 5 gate passed. Phase 5 also added a constraint naming convention to `Model.metadata` (`uq_<table>_<col>`, `ix_<table>_<col>`, `pk_<table>`), so autogenerate can name and drop constraints reliably.
+
+**Goal:** the user changes a model and runs two commands. The database follows, and the user never writes migration code or touches Alembic config. The CLI comes in Phase 7, so Phase 6 delivers the Python functions that the CLI will call.
+
+**Public API**
+
+```python
+from fyro import migrations
+
+migrations.makemigrations()            # -> Path of the new file, or None when nothing changed
+migrations.makemigrations("add tags")  # optional message for the file name
+migrations.migrate()                   # move to the latest revision
+migrations.migrate("ae1027a6acf")      # move up or down to that revision
+migrations.migrate("zero")             # unapply everything (empty schema)
+```
+
+The project layout (from the `PLAN.md` north star):
+
+```
+myproject/                 # project root = parent of the package holding settings.py
+  myproject/settings.py
+  migrations/              # created on first makemigrations; only revision files live here
+    2026_10_22_1530-ae1027a6acf_initial.py
+    2026_10_23_0912-3c5d0e1b7f2a_add_tags.py
+```
+
+**Locked decisions (set before this phase, researched against Django, Rails, Flask-Migrate, Piccolo and Alembic):**
+1. **Hidden `env.py`.** fyro ships `env.py` and `script.py.mako` inside the package. The user's `migrations/` folder holds only revision files. This is the Django and Piccolo approach. An "eject" option is deferred until someone asks.
+2. **Alembic revision ids** (random hex) stay. Sequential `0001` ids would make two branches that both create `0002` a hard duplicate-id error, while hex ids give two heads that Alembic can merge. Files are prefixed with their creation time so they sort, as Piccolo does: `file_template = %(year)d_%(month).2d_%(day).2d_%(hour).2d%(minute).2d-%(rev)s_%(slug)s`.
+3. **One `migrate(target)` moves up or down** to reach the target, like Rails `db:migrate VERSION=` and Django `migrate app 0001`. `"zero"` unapplies everything (Django) and maps to Alembic `base`.
+4. **The folder location is derived:** `<project root>/migrations/`, where the project root is the parent directory of the package that contains the `FYRO_SETTINGS` module. There is no new setting.
+5. **Enums are stored as VARCHAR, not Postgres `ENUM` types.** The Phase 3 type map changes from `sa.Enum(cls)` to `sa.Enum(cls, native_enum=False, values_callable=<member values>, length=255)`, with no CHECK constraint.
+   - The column holds the member **value** (`"draft"`), the same as the API.
+   - Pydantic validates values. The database does not, which matches Django `choices`.
+   - Adding, removing, renaming or reordering values needs no migration, as long as values stay within 255 characters.
+   - This avoids Alembic leaving enum types behind on downgrade, and the `alembic-postgresql-enum` dependency.
+
+**Rules**
+- **No `alembic.ini`.**
+  - fyro builds `alembic.config.Config()` in code.
+  - `script_location` points to `fyro/migrations/template/`.
+  - `version_locations` points to the project's `migrations/`.
+- **Metadata.** `env.py` loads the project via `get_settings()` and `apps.registry.populate(installed_apps)`, then uses `target_metadata = Model.metadata`. Every installed app's models are included, and nothing else.
+- **Async.** `env.py` follows Alembic's asyncio recipe (`create_async_engine(settings.database_url, poolclass=NullPool)`, `connection.run_sync(do_run_migrations)`).
+  - `makemigrations` and `migrate` are **sync** functions, as Alembic commands are, so the Phase 7 CLI can call them directly.
+  - Called from inside a running event loop, they raise `RuntimeError`: "call from sync code or use `await asyncio.to_thread(...)`".
+- **Messages.** The default message is `initial` for the first revision and `auto` after that.
+- **No empty migrations.** When autogenerate finds no changes, no file is written and `makemigrations()` returns `None`. Do this with `process_revision_directives`, passed to `command.revision` or set in `env.py`. Programmatic configs have no `cmd_opts`, so the cookbook's `cmd_opts.autogenerate` check does not apply as written.
+- **Type comparison.** Autogenerate compares types (`compare_type=True`). There is no `server_default` comparison, because defaults are Python-side only (Phase 3 gate). A fresh `migrate()` must leave `command.check` with nothing to do.
+- **Renames show up as drop plus add.** That loses data. `makemigrations()` logs a warning naming the table and columns whenever one revision drops and adds columns on the same table. The README documents this.
+- **Errors** raise `ImproperlyConfigured` and say how to fix the problem:
+  - `migrate()` with no `migrations/` directory: run `makemigrations` first.
+  - An unknown target revision.
+  - Two heads (a branch): name both and say how to merge (`alembic merge`; a fyro command for it is deferred to Phase 7).
+
+**Layout:**
+- `src/fyro/migrations/__init__.py` holds `makemigrations` and `migrate`, plus a private `_config()`.
+- `src/fyro/migrations/template/env.py` and `script.py.mako` ship as package data. Verify that `uv_build` puts the `.mako` file in the wheel.
+- `src/fyro/models/base.py` gets the enum mapping change, and the Phase 3 tests are updated to the new mapping.
+
+**Steps and checks**
+1. Check the current docs:
+   - Alembic `Config` without an ini file (`set_main_option`, `%%` escaping, `script_location`, `version_locations`, `file_template`);
+   - `command.revision(autogenerate=True, process_revision_directives=...)`, `upgrade`, `downgrade`, `check`, and `ScriptDirectory` (for heads and for up/down direction);
+   - the asyncio cookbook;
+   - SQLAlchemy `Enum(native_enum=False, values_callable=..., length=...)`;
+   - `uv_build` package data.
+2. **Spike.** In a throwaway directory against Docker Postgres, prove these things:
+   - `Config()` with no ini file, with `script_location` and `version_locations` in different directories, can autogenerate, upgrade, check and downgrade;
+   - `file_template` gives a date-prefixed file name;
+   - the empty-migration directive writes nothing;
+   - a non-native Enum column round-trips with no spurious diff in `check`;
+   - `uv build` puts `template/script.py.mako` in the wheel.
+
+   **Stop and report before continuing.**
+3. Write failing tests. They use a temporary project dir and a **dedicated database per test module**, created and dropped with an autocommit connection, so `alembic_version` never touches other tests. Cover:
+   - the first `makemigrations` gives `*_initial.py`, which creates every installed model's table;
+   - running it again with no changes gives `None`;
+   - adding a field gives `*_auto.py` with only that column;
+   - `migrate()` twice is a no-op;
+   - after `migrate()`, `command.check` passes;
+   - `migrate(<first rev>)` downgrades and `migrate("zero")` empties the schema;
+   - `migrate(<head>)` from `zero` goes back up;
+   - unique constraints and indexes keep the naming-convention names;
+   - a rename produces drop plus add and a warning;
+   - the error cases above;
+   - calling from a running loop raises `RuntimeError`;
+   - an Enum column is `VARCHAR(255)`, stores the value, and adding an enum member needs no migration (`makemigrations()` returns `None`).
+4. Implement. Check: all tests pass (Phases 0 to 5 still green, with the Phase 3 enum test updated to the new mapping) and `uv run ruff check` is clean.
+5. **Gate.** Use a demo project with only `blog/models.py`. Then:
+   1. run `makemigrations` and show the initial file content;
+   2. run `migrate`;
+   3. show the tables with `psql \d`;
+   4. add a field, run `makemigrations` and `migrate`;
+   5. run `makemigrations` again, which reports nothing;
+   6. migrate back to the first revision, showing the column is gone;
+   7. hit the Phase 5 CRUD API to prove the app works on a migrated schema.
+
+   **Stop and ask the user to approve before Phase 7.**
+
+**Out of scope:**
+- the CLI commands themselves (Phase 7);
+- a merge command;
+- data migrations;
+- squashing;
+- multiple databases;
+- per-app histories;
+- rename detection;
+- warning at startup about unapplied migrations;
+- an `env.py` eject;
+- switching the existing test suite from `create_all` to `migrate` (`test.md` asks for this after Phase 6; do it as a separate step once approved).
+
+---
+
+
+## Phases 7 to 10 prompts
+
+Written after the Phase 6 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
