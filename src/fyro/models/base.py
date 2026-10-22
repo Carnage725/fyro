@@ -11,9 +11,10 @@ import sqlalchemy as sa
 from pydantic import BaseModel
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from fyro import apps
+from fyro import apps, db
 from fyro.conf import ImproperlyConfigured
 from fyro.models.fields import MISSING, FieldInfo
+from fyro.models.manager import Manager, QuerySet
 from fyro.models.schemas import build_schemas
 
 COLUMN_TYPES: dict[Any, Any] = {
@@ -83,7 +84,10 @@ class Model(DeclarativeBase):
     Create: ClassVar[type[BaseModel]]
     Read: ClassVar[type[BaseModel]]
     Update: ClassVar[type[BaseModel]]
+    DoesNotExist: ClassVar[type[db.DoesNotExist]]
+    MultipleObjectsReturned: ClassVar[type[db.MultipleObjectsReturned]]
     __fyro_fields__: ClassVar[dict[str, FieldInfo]]
+    objects: ClassVar[QuerySet] = Manager()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kw: Any) -> None:
         name = cls.__name__
@@ -156,4 +160,7 @@ class Model(DeclarativeBase):
 
         cls.__fyro_fields__ = fields
         cls.Create, cls.Read, cls.Update = build_schemas(name, hints, fields, meta)
+        for error in (db.DoesNotExist, db.MultipleObjectsReturned):
+            namespace = {"__module__": cls.__module__, "__qualname__": f"{name}.{error.__name__}"}
+            setattr(cls, error.__name__, type(error.__name__, (error,), namespace))
         apps.registry.register_model(label, cls)
