@@ -215,8 +215,8 @@ Full spec: `BUILD_PROMPT.md`, Phase 4 prompt. Summary:
 
 5. **Auto CRUD** (detailed in `BUILD_PROMPT.md`): per-model router at `/api/<app>/<model>` with list (field filters, limit/offset, total count), get, create, patch and delete. It shows in OpenAPI and can be opted out of via `Meta.api = False`. A custom route that duplicates a CRUD method+path is a startup error naming both. **This is the demo gate.**
 6. **Migrations**: Alembic, async `env.py`, one history per project, `target_metadata` from the registry. Spike: `Config` without `alembic.ini`. Renames show up as drop + add, and this is documented.
-7. **CLI** (Typer): `new` (also writes `.env` with a `fyro-insecure-` secret key and a `.gitignore` containing `.env`), `startapp`, `runserver` (uvicorn), `makemigrations`, `migrate`, `createsuperuser`. Verify with a scripted end-to-end run of the 10-minute test.
-8. **Auth**: built-in `fyro.auth` app, `User` model, password hashing, session + JWT login, per-model permissions (`Meta.permissions`).
+7. **CLI** (Typer): `new` (also writes `.env` with a `fyro-insecure-` secret key and a `.gitignore` containing `.env`), `startapp`, `runserver` (uvicorn), `makemigrations`, `migrate`. Verify with a scripted end-to-end run of the 10-minute test.
+8. **Auth**: built-in `fyro.auth` app, `User` model, `createsuperuser` command (moved from Phase 7), password hashing, session + JWT login, per-model permissions (`Meta.permissions`).
 9. **Admin**: at `/admin`, HTMX + Jinja2 inside the package, consuming the generated API: list, search, edit, delete. No relation picker in v0.1 because relations come in v0.2.
 10. **Rust engine**: profile real usage, then swap the `Engine` implementation via PyO3/maturin. The public API does not change.
 

@@ -11,7 +11,7 @@ Agents tend to write tests that fail none of these ways: they pass on the first 
 - **Stack:** FastAPI, Pydantic v2, pydantic-settings, SQLAlchemy 2 async, asyncpg, Alembic, Typer. Postgres only.
 - **Test tools:** pytest, pytest-asyncio (`asyncio_mode = "auto"`), httpx, and a real Postgres from `docker compose up -d`.
 - **The contract is `PLAN.md` and `BUILD_PROMPT.md`, not `src/`.** Expected values come from the phase spec. If the spec does not say what should happen, stop and ask the user. Do not read the answer off the code.
-- **Build state:** phases 0 to 5 are built (settings, app loader, Model class, engine/session/manager, auto CRUD). Phase 6 (migrations) is drafted in `BUILD_PROMPT.md` but not built. Phases 6 to 10 do not exist yet. Only test what exists. Checklist items for later phases apply when that phase lands.
+- **Build state:** phases 0 to 6 are built (settings, app loader, Model class, engine/session/manager, auto CRUD, migrations). Phase 7 (CLI) is drafted in `BUILD_PROMPT.md` but not built. Phases 7 to 10 do not exist yet. Only test what exists. Checklist items for later phases apply when that phase lands.
 
 Four pieces carry the framework and get the heaviest attack. A silent bug in any of them breaks every user at once:
 
@@ -21,6 +21,7 @@ Four pieces carry the framework and get the heaviest attack. A silent bug in any
 | Model class | `src/fyro/models/{base,fields,schemas}.py` | `tests/test_models.py`, `tests/test_models_db.py` |
 | Engine, session, manager | `src/fyro/db/`, `src/fyro/models/manager.py` | `tests/test_db.py` |
 | Auto CRUD (phase 5) | `src/fyro/crud.py`, `src/fyro/app.py` (404 handler, route order, duplicate check) | `tests/test_crud.py` (DB), `tests/test_crud_startup.py` (startup errors) |
+| Migrations (phase 6) | `src/fyro/migrations/__init__.py`, `src/fyro/migrations/template/{env.py,script.py.mako}` | `tests/test_migrations.py` (own database `fyro_test_migrations`) |
 
 ## Mindset
 
@@ -50,6 +51,12 @@ Copy the promises for the unit under test from `PLAN.md` / `BUILD_PROMPT.md` int
   - snake_case path segment (`/api/blog/blog_post`) and a path param named after the pk field (`{id}`, `{slug}`);
   - 409 `"<Model> with this <field> already exists."` on unique violations from `POST`/`PATCH` only;
   - constraint names fixed by `Model.metadata`'s naming convention (`uq_<table>_<col>`, `ix_<table>_<col>`, `pk_<table>`).
+- the phase 6 decisions:
+  - a hidden `env.py`, with no `alembic.ini` in the project;
+  - Alembic hex revision ids in date-prefixed file names (`YYYY_MM_DD_HHMM-<rev>_<slug>.py`);
+  - one `migrate(target)` that moves up or down (`"zero"` empties the database);
+  - `migrations/` in the directory holding the settings module's top package;
+  - enums stored as VARCHAR(255) holding the member value, with no CHECK constraint.
 
 ### 2. List the attacks
 Before writing code, list the attacks using the checklist below. Each one becomes a test or a recorded gap.
@@ -94,7 +101,10 @@ async def test_valid_title_never_500(title): ...
 - **Never mock the database, the engine, the session or any `fyro` module.** Never use SQLite. fyro is Postgres-only and SQLite hides real behavior.
 - **Database:** the docker compose Postgres, URL from `FYRO_TEST_DATABASE_URL` (default `postgresql+asyncpg://fyro:fyro@localhost:5432/fyro`). Follow the pattern in `tests/test_db.py`: tables are created per module and a `TRUNCATE ... RESTART IDENTITY` runs before each test.
 - **Do not wrap tests in an outer transaction that rolls back.** fyro's request middleware commits before the response starts, and `fyro.db.session()` commits on clean exit. A rollback-wrapped test would turn those commits into savepoints and hide the exact bugs we need to see. Tests must observe real commits and real rollbacks by reading Postgres afterwards on a separate connection.
-- **Schema:** use `Model.metadata.create_all` until phase 6. After phase 6, build the test schema by running fyro's real `migrate`, so every run also tests migrations.
+- **Schema:** build the test schema by running fyro's real `migrate`, so every run also tests migrations.
+  - **Current state:** only `tests/test_migrations.py` does this. The phase 0 to 5 suites still use `Model.metadata.create_all`. Switching them is a pending, separate step: ask before doing it.
+  - Migration tests need their own database, because `alembic_version` is global per database. Create and drop it with an autocommit connection, as `tests/test_migrations.py` does.
+  - They also need `sys.dont_write_bytecode = True` when they rewrite `models.py` within one test, or a stale `.pyc` can hide the change.
 - **Global state is the main source of flakiness.** `get_settings` is cached, the registry (`fyro.apps.registry`) and `Model.metadata` are global, and fixture apps sit in `sys.modules`. Every test that touches them must reset them, as the existing fixtures do (`get_settings.cache_clear()`, a fresh `Registry`, `Model.metadata.clear()`, removing `blog` from `sys.modules`). A test that passes alone but fails in random order is a real bug in the test or in fyro.
 - **Fakes are only for what fyro cannot run or control:** third-party HTTP (later: OAuth, email), the clock, randomness, and failures you cannot trigger on demand.
   - Write small fakes against a Protocol, not `MagicMock`.
@@ -147,6 +157,17 @@ fyro-specific mutations (do all that apply to the code under test):
   - Not found: make `DELETE` return 204 for a missing row; remove the `DoesNotExist` 404 handler.
   - Conflicts: return 409 for every `IntegrityError` instead of only SQLSTATE `23505`; remove the naming convention so the 409 says "these values".
   - Routing: mount CRUD before custom routes; skip the duplicate-route check; stop normalizing path param names in it (`{id}` vs `{post_id}`); include `Meta.api = False` models anyway.
+- **Migrations (phase 6):** the first four were run by hand at the phase 6 build and were all KILLED.
+  - `migrate` never downgrades.
+  - Empty revisions are written.
+  - The rename warning is removed.
+  - The stale-database check in `makemigrations` is removed.
+  - The default message is always `auto`.
+  - `%` is not escaped in config paths.
+  - `migrations/` resolves to the settings package instead of the project root.
+  - The two-heads check is skipped.
+  - `compare_type=False`.
+  - Enums go back to `native_enum=True`, or store names instead of values.
 
 Hand-mutate at least every conditional and boundary in the code you tested. For each mutant, record KILLED, or SURVIVED with either a new test that kills it or a one-line reason it changes no behavior. Never drop a mutant to improve the numbers.
 
@@ -240,7 +261,45 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
 - **OpenAPI:** each model has `<Model>Create`, `Read`, `Update` and `Page` schemas, tag `<app>.<model>`, and summaries such as "Get Post".
 - **Known gap to attack:** a model field named `limit` or `offset` collides with the paging params, and nothing checks for it yet. Report what happens.
 
-**Migrations (phase 6):** `makemigrations` with no changes creates nothing; `migrate` twice is a no-op; a fresh `migrate` produces a schema equal to `Model.metadata` (`alembic check` passes); downgrade works; a rename shows as drop + add, as documented.
+**Migrations (phase 6, built):**
+- **Adding a NOT NULL field with a default to a table that already has rows (attack first).**
+  - Defaults are Python-side only (phase 3 decision), so the generated `add_column(..., nullable=False)` has no `server_default`.
+  - Postgres rejects that on a non-empty table (`column ... contains null values`).
+  - Expected: `migrate()` fails. This is a likely real gap between two locked decisions: report it, do not paper over it.
+- **`makemigrations`:**
+  - no changes gives `None` and no file;
+  - the first file is `*_initial`, later ones `*_auto`, and a custom message becomes the slug;
+  - the file name matches `YYYY_MM_DD_HHMM-<12 hex>_<slug>.py`;
+  - a database behind head gives `ImproperlyConfigured` mentioning `migrate()`;
+  - two heads give `ImproperlyConfigured` naming both ids;
+  - a call from a running event loop gives `RuntimeError` mentioning `to_thread`.
+- **Location:**
+  - `migrations/` lands in the directory holding the settings module's top package (`myproject.settings` puts it beside `myproject/`).
+  - Also try a top-level `settings` module, a nested `a.b.settings`, and project paths containing spaces, `%` and `:`.
+- **`migrate`:**
+  - twice is a no-op;
+  - targets `head`, `zero`, a full revision id, a unique prefix, an ambiguous prefix, and an unknown id (`ImproperlyConfigured` naming it);
+  - an older target downgrades, a newer one upgrades, the current one is a no-op;
+  - no `migrations/` gives `ImproperlyConfigured` mentioning `makemigrations()`;
+  - an empty `migrations/` folder.
+- **Schema equality:** after `migrate()`, `makemigrations()` returns `None` for **every** supported type:
+  - `int`, `str` with and without `max_length`, `bool`, `float`, `Decimal`, `datetime` (timestamptz), `date`, `UUID`, `Enum`;
+  - each as `T | None`;
+  - with `unique`, `index`, and a declared non-`id` primary key.
+  
+  Any spurious diff is a bug.
+- **Names:** constraints and indexes in Postgres carry the naming-convention names (`pk_`, `uq_`, `ix_`).
+- **Rename warning:** a rename logs a warning on `fyro.migrations` naming the table and both columns. A pure add or a pure drop logs nothing.
+- **Round trips:** `upgrade`, `zero` and `upgrade` again, repeated, with data in the tables where the downgrade allows it.
+- **Enums:**
+  - the column is `character varying(255)` and stores the member value (`draft`, not `DRAFT`), with no `pg_type` created;
+  - adding a member gives no migration;
+  - an int-valued Enum stores the string form;
+  - **removing a member that rows still use makes reads raise `LookupError`** (documented behavior: assert it, so a change is noticed);
+  - a value longer than 255 characters is not specified in the contract, so ask.
+- **Scope of `env.py`:** only installed apps' models reach `target_metadata`. Offline mode raises `RuntimeError`.
+- **Concurrency:** two `migrate()` calls at once on one database. Alembic takes no lock. Report what happens.
+- **Package data:** a built wheel (`uv build`) contains `fyro/migrations/template/env.py` and `script.py.mako`.
 
 **CLI (phase 7):** `fyro new` writes `.env` with a `fyro-insecure-` key and a `.gitignore` containing `.env`; it never overwrites an existing project; the end-to-end 10-minute test is scripted.
 

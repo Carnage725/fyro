@@ -1,6 +1,6 @@
 # fyro: Build Prompts
 
-> **Status: FINAL (v0.1, Phases 0 to 6).**
+> **Status: FINAL (v0.1, Phases 0 to 7).**
 > How to use: paste the **Master prompt** at the start of every build session, then paste exactly **one** phase prompt. One phase per session.
 
 ---
@@ -373,6 +373,104 @@ myproject/                 # project root = parent of the package holding settin
 ---
 
 
-## Phases 7 to 10 prompts
+## Phase 7 prompt: CLI
 
-Written after the Phase 6 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
+Execute **Phase 7** of `PLAN.md` ("CLI"). The Phase 6 gate passed: `fyro.migrations.makemigrations()` / `migrate(target)` exist as sync functions. Every command here is a thin wrapper over something already built. The CLI adds **no new framework behavior**.
+
+**Goal:** the `PLAN.md` success test, end to end, from an empty folder, in under 10 minutes, with no glue code and no decisions about where files go.
+
+**Public API**
+
+```bash
+fyro new mysite              # create a project (refuses to overwrite anything)
+cd mysite
+docker compose up -d         # Postgres for this project (compose.yaml written by `new`)
+uv run manage.py startapp blog
+# write blog/models.py, add "blog" to installed_apps
+uv run manage.py makemigrations [-m "message"]
+uv run manage.py migrate [target]        # target: revision id, "head" (default) or "zero"
+uv run manage.py runserver [--host 127.0.0.1] [--port 8000] [--no-reload]
+```
+
+`fyro <command>` works the same as `manage.py <command>` whenever `FYRO_SETTINGS` is set. `manage.py` only sets it.
+
+**`fyro new mysite` writes (the `PLAN.md` north star):**
+
+```
+mysite/
+  manage.py           # os.environ.setdefault("FYRO_SETTINGS", "mysite.settings"); fyro.cli.main()
+  asgi.py             # same setdefault; app = fyro.create_app()
+  .env                # FYRO_SECRET_KEY=fyro-insecure-<random>, FYRO_DEBUG=true, FYRO_DATABASE_URL=...
+  .gitignore          # .env, .venv/, __pycache__/
+  compose.yaml        # Postgres 16, healthcheck, named volume, host port "${FYRO_DB_PORT:-5432}:5432"
+  mysite/
+    __init__.py
+    settings.py       # class ProjectSettings(fyro.Settings): installed_apps: list[str] = []
+```
+
+`migrations/` is not created by `new`. The first `makemigrations` creates it (Phase 6).
+
+**Rules**
+- **Typer app** in `src/fyro/cli.py`. It is exposed as the `fyro` console script (`[project.scripts] fyro = "fyro.cli:main"`) and called by the generated `manage.py`.
+- **Errors.** `ImproperlyConfigured` and `TypeError` from model definitions print one red line, with no traceback, and exit with code 1. Any other exception keeps its traceback.
+- **Project commands** (`startapp`, `makemigrations`, `migrate`, `runserver`) put the current directory on `sys.path` first, so `fyro <cmd>` from the project root imports the project. That already happens for `python manage.py`.
+- **`new <name> [directory]`.**
+  - `name` must be a valid Python identifier and must not shadow an importable module (`fyro new json` is an error, as in Django `startproject`).
+  - Any file it would write that already exists is an error, and nothing is written. It never partially overwrites.
+  - The secret key is `fyro-insecure-` + `secrets.token_urlsafe(50)`. The Phase 1 rule then warns in debug and errors in production, by design.
+  - It prints the next steps.
+- **`startapp <name>`.** It creates `<name>/__init__.py` and `<name>/models.py` (`from fyro import Field, Model` with a commented example). It writes no `routes.py`, because CRUD is automatic. It **does not edit `settings.py`** (Django behavior); it prints the line to add to `installed_apps`. The same name rules as `new` apply, and an existing directory is an error.
+- **App not installed.** `makemigrations` and `runserver` print a warning for every directory in the project root that holds a `models.py` but is not in `installed_apps`: "`blog/` looks like an app but is not in installed_apps (`mysite/settings.py`)". This catches the most common Django beginner mistake without editing user code.
+- **`makemigrations [-m]`** prints the new file path, or `No changes detected` when it returns `None`. Alembic's own stdout and INFO logs are silenced (Alembic `Config(stdout=...)`, the logging level) unless `--verbose` is given.
+- **`migrate [target]`** prints the revisions applied or unapplied, then `Database is at <rev>` (or `empty`).
+- **`runserver`** runs uvicorn on `asgi:app`, binding 127.0.0.1 by default, with auto-reload on by default (Django `runserver`, `fastapi dev`) and `--no-reload` to turn it off. It prints the `/docs` URL. When unapplied migrations exist it prints a warning line ("You have unapplied migrations; run migrate"), as Django does, without failing.
+
+**Steps and checks**
+1. Check the current docs: Typer (commands, options, `typer.testing.CliRunner`, exit codes), `[project.scripts]` with `uv_build`, `uvicorn.run(..., reload=True)` (needs an import string), and Alembic `Config(stdout=...)`.
+2. Write failing tests:
+   - `CliRunner` for every command's output and exit code;
+   - `new` writing the exact tree, plus the refusals (bad name, shadowed module, existing files) leaving nothing behind;
+   - the `.env` key prefix and length;
+   - `.gitignore` containing `.env`;
+   - `startapp` output and its refusals;
+   - `makemigrations` "No changes detected";
+   - `migrate zero` and back;
+   - an error being one line with exit code 1 and no traceback;
+   - `fyro` vs `manage.py` parity;
+   - the unapplied-migrations warning.
+
+   Check: the tests fail.
+3. Implement. Check: all tests pass (Phases 0 to 6 still green) and `uv run ruff check` is clean.
+4. **Scripted end-to-end test (the success test).** A subprocess script in a temp dir runs:
+   1. `fyro new mysite`, with the DB URL pointed at a dedicated test database;
+   2. `startapp blog`;
+   3. it writes the north-star `Post`, adds `"blog"`, then runs `makemigrations` and `migrate`;
+   4. it starts `runserver` and polls until it is up;
+   5. it calls `POST`/`GET /api/blog/post` and `/docs`;
+   6. it stops the server and times each step.
+
+   Mark it as a slow test.
+5. **Gate.** Run the end-to-end flow by hand in a scratch dir and show every command with its output, the generated files, and the API calls. **Stop and ask the user to approve before Phase 8.**
+
+**Locked decisions (researched against Django, Rails 7.2, Laravel Sail and the FastAPI CLI):**
+1. **`createsuperuser` moves to Phase 8.** In Django it ships with the auth app; fyro has no `User` until Phase 8.
+2. **`new` writes `compose.yaml` by default.** fyro is Postgres-only, so there is no database to choose (Rails makes it opt-in only because it supports many). The host port is overridable from the shell, Sail-style.
+   - The variable cannot live in `.env`: Phase 1 forbids unknown keys there.
+   - The next steps printed by `new` mention the override.
+3. **`FYRO_DEBUG=true` in `.env`.** This mirrors Django `startproject` (`DEBUG = True` plus a `django-insecure-` key). `Settings.debug` still defaults to `False`, so a server without this `.env` is safe.
+4. **`runserver` reloads by default and binds 127.0.0.1,** like `fastapi dev`.
+5. **`startapp` prints the `installed_apps` line and never edits `settings.py`,** plus the app-not-installed warning above.
+6. **Both entry points:** the `fyro` console script and the generated `manage.py`, Django-style.
+
+**Out of scope:**
+- `createsuperuser` (Phase 8);
+- `shell`, `dbshell`, `test` and `merge` commands;
+- project templates and options (`--template`);
+- shell completion;
+- Windows-specific handling beyond what Typer and uvicorn give.
+
+---
+
+## Phases 8 to 10 prompts
+
+Written after the Phase 7 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.
