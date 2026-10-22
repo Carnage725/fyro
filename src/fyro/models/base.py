@@ -56,7 +56,14 @@ def _unwrap_optional(tp: Any) -> tuple[Any, bool]:
 
 def _column_type(where: str, tp: Any, info: FieldInfo) -> Any:
     if isinstance(tp, type) and issubclass(tp, enum.Enum):
-        return sa.Enum(tp)
+        # VARCHAR holding the member value, not a Postgres ENUM type: adding members needs
+        # no migration. No CHECK constraint; Pydantic validates.
+        return sa.Enum(
+            tp,
+            native_enum=False,
+            values_callable=lambda cls: [str(member.value) for member in cls],
+            length=255,
+        )
     if tp is str:
         return sa.String(info.max_length) if info.max_length else sa.Text()
     try:

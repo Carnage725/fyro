@@ -134,6 +134,10 @@ def test_column_types_and_nullability():
     assert isinstance(cols["day"].type, sa.Date)
     assert isinstance(cols["token"].type, sa.Uuid)
     assert isinstance(cols["status"].type, sa.Enum) and cols["status"].type.enum_class is Status
+    # Phase 6 decision: VARCHAR(255) holding the member value, no Postgres ENUM type
+    assert cols["status"].type.native_enum is False
+    assert cols["status"].type.length == 255
+    assert cols["status"].type.enums == ["draft", "live"]
     assert cols["subtitle"].nullable and cols["rating"].nullable
     assert not cols["title"].nullable and not cols["views"].nullable
 

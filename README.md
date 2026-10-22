@@ -21,6 +21,21 @@ class ProjectSettings(Settings):
 
 Point `FYRO_SETTINGS` at the module (`FYRO_SETTINGS=myproject.settings`). Any field can be overridden by an env var or `.env` entry named `FYRO_<FIELD>`. `FYRO_SECRET_KEY` is required. List fields accept JSON (`'["a","b"]'`) or comma-separated (`a,b`) values.
 
+## Migrations
+
+```python
+from fyro import migrations
+
+migrations.makemigrations()   # writes migrations/<date>-<rev>_initial.py, or None if nothing changed
+migrations.migrate()          # up to the latest revision
+migrations.migrate("<rev>")   # up or down to a revision; "zero" empties the database
+```
+
+Revision files live in `<project root>/migrations/`. fyro keeps the Alembic config and `env.py` internal.
+
+- **Renames are not detected.** Renaming a field shows up as drop + add, which loses that column's data. `makemigrations()` logs a warning when it sees this.
+- **Enums are stored as VARCHAR(255)** holding the member value, so adding members needs no migration. Before removing a member, update the rows that use it: reading a row whose stored value is no longer in the enum raises `LookupError`.
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
