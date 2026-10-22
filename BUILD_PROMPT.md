@@ -794,7 +794,7 @@ Execute **Phase 9** of `PLAN.md` ("Admin"). The Phase 8 gate passed: `fyro.auth`
    - Drive the admin in a real browser and capture screenshots: login, the model list, search, sort and filter, add, an edit with a validation error, bulk delete, user create, and a password change.
    - Show light and dark mode.
 
-   **Stop and ask the user to approve before Phase 10.**
+   **Stop and ask the user to approve.**
 
 **Out of scope:**
 - relation pickers (v0.2);
@@ -816,8 +816,3 @@ Execute **Phase 9** of `PLAN.md` ("Admin"). The Phase 8 gate passed: `fyro.auth`
 5. **Changing a user's password or deactivating them deletes all their sessions.**
 6. **Font: JetBrains Mono** (user request at the gate), bundled as one variable `woff2` (Latin subset, OFL-1.1, from `@fontsource-variable/jetbrains-mono` 5.3.0, checked against the npm checksum). It is not loaded from Google Fonts, because the CSP allows only `'self'`.
 7. **`User.email` has `max_length=254`** (RFC 5321), found at the gate: without a length the admin showed it as a textarea.
----
-
-## Phase 10 prompt
-
-Written after the Phase 9 gate passes, using the outline in `PLAN.md`. Each will follow the same shape: goal, public API, tests first, step checks, gate.

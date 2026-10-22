@@ -11,7 +11,7 @@ Agents tend to write tests that fail none of these ways: they pass on the first 
 - **Stack:** FastAPI, Pydantic v2, pydantic-settings, SQLAlchemy 2 async, asyncpg, Alembic, Typer. Postgres only.
 - **Test tools:** pytest, pytest-asyncio (`asyncio_mode = "auto"`), httpx, and a real Postgres from `docker compose up -d`.
 - **The contract is `PLAN.md` and `BUILD_PROMPT.md`, not `src/`.** Expected values come from the phase spec. If the spec does not say what should happen, stop and ask the user. Do not read the answer off the code.
-- **Build state:** phases 0 to 7 are built (settings, app loader, Model class, engine/session/manager, auto CRUD, migrations, CLI), plus the phase 6.1 fix for new NOT NULL columns. Phase 8 (auth) is specified in `BUILD_PROMPT.md` but not built. Phases 8 to 10 do not exist yet. Only test what exists. Checklist items for later phases apply when that phase lands.
+- **Build state:** v0.1 is fully built: phases 0 to 9 (settings, app loader, Model class, engine/session/manager, auto CRUD, migrations, CLI, auth, admin), plus the phase 6.1 fix for new NOT NULL columns.
 
 Four pieces carry the framework and get the heaviest attack. A silent bug in any of them breaks every user at once:
 
@@ -258,7 +258,7 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
 - `limit(0)`, a negative `offset`, `offset` past the end.
 - `update` / `delete` with no filter affect all rows (contract). The rowcount is exact.
 - Lifespan disposes the engine; `get_engine()` after disposal works again.
-- Engine seam: the manager only calls `fetch` / `execute`. Write this as one contract suite that any `Engine` must pass, so the phase 10 Rust engine runs the same suite unchanged.
+- Engine seam: the manager only calls `fetch` / `execute`. Write this as one contract suite that any `Engine` implementation must pass.
 
 **Auto CRUD (phase 5, built):**
 - **Paging:**

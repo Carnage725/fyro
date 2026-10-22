@@ -32,14 +32,6 @@ We will learn from SQLModel's code but not build on top of it. Our Model class i
 
 It is all Python. The magic happens once, at startup: a metaclass reads each model class, collects its fields, and generates the table and schemas. A loader reads the list of installed apps, imports each one's models and routes, and wires them into FastAPI. After that, every request just runs a fairly dumb loop. So the cleverness lives in Python at startup, and the speed lives in the per-request path.
 
-## Where Rust comes in, and where it does not
-
-Rust is for speed, but only where speed is actually lost. Pydantic v2 is already Rust, and orjson is already Rust. Route handlers mostly wait on the database, and Rust cannot speed up waiting.
-
-The real win is the data path. Normally database rows become Python objects, then Pydantic objects, then dicts, then JSON. Python builds thousands of objects just to throw them away. With a Rust engine, rows go from the database straight to JSON bytes and Python never touches them. That is the same idea as Polars: Python describes the work, Rust does it.
-
-We build this last, after real users show us where it hurts. The trick is to design a clean engine seam early. The engine takes a query, runs it and returns rows. We write it in Python first, then swap in a Rust version later through PyO3 and maturin. The user's API never changes.
-
 ## What we are aiming for, in build order
 
 1. Typed settings. One settings class for the database URL, secret key and installed apps. Everything reads from it.
@@ -51,7 +43,6 @@ We build this last, after real users show us where it hurts. The trick is to des
 7. The CLI. Commands like new, startapp, runserver, makemigrations, migrate and createsuperuser. By now each command just calls things we already built.
 8. Auth and permissions. A built-in user model, login with sessions and JWT, and simple per-model permissions.
 9. The admin. HTMX screens that call our own auto-generated API: list, search, edit, delete and a relation picker. After this step we have a product.
-10. The Rust engine swap. Profile real usage, then replace the slowest path with Rust.
 
 The three that carry everything are the app loader, the Model class and the auto CRUD. Get those right and the rest is plumbing.
 
@@ -69,7 +60,7 @@ The test is simple. A developer writes one model class, runs one command, and ge
 
 ## The rules we follow
 
-The API is the product. Rust is an implementation detail we swap in later, and the API must never change when we do.
+The API is the product. The internals can change, but the public API must never change when they do.
 Wrap, do not rewrite. Use Alembic, SQLAlchemy and Pydantic instead of building our own versions.
 Strong opinions beat more options.
 Show a working demo as early as possible and let real users tell us what to build next.

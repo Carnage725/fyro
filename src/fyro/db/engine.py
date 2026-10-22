@@ -7,7 +7,7 @@ from fyro.db.session import current_session
 
 
 class Engine(Protocol):
-    """The seam between the query API and the database: Python now, Rust later."""
+    """The seam between the query API and the database: the manager only calls these."""
 
     async def fetch(self, stmt: Any) -> list[Any]:
         """Run a SELECT or INSERT ... RETURNING and return its rows."""

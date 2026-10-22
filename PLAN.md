@@ -1,6 +1,6 @@
 # fyro: Build Plan
 
-> **Status: FINAL (v0.1 plan).** Phases 0 to 4 are built and their gates passed. Phase 5 is detailed in `BUILD_PROMPT.md`. Phases 6 to 10 get detailed after the Phase 5 gate.
+> **Status: FINAL (v0.1 plan).** Phases 0 to 9 are built and their gates passed (plus the Phase 6.1 fix). Each phase is detailed in `BUILD_PROMPT.md`.
 
 ## Goal
 
@@ -28,7 +28,7 @@ A Django-feeling framework on top of FastAPI. One model class produces the table
 | Table name | `<app_label>_<model_snake>`, e.g. `blog_post`. `Meta.table_name` overrides. |
 | Escape hatch | `Meta` tweaks (`create_exclude`, `read_exclude`, `update_exclude`) plus full replace (`create_schema`, `read_schema`, `update_schema`) |
 | Query API | Django-style async manager: `await Post.objects.filter(title="x").all()`. Session comes from a request-scoped contextvar. |
-| Engine seam | The manager only calls `engine.fetch(stmt) -> list` (rows/scalars) and `engine.execute(stmt) -> int` (rowcount). Python now, Rust (PyO3/maturin) later, with an identical API. |
+| Engine seam | The manager only calls `engine.fetch(stmt) -> list` (rows/scalars) and `engine.execute(stmt) -> int` (rowcount), so the database layer can be swapped without changing the public API. |
 | Update schema | Strict: every field defaults to `None`, but the annotation stays `T`. An explicit `null` on a NOT NULL column is rejected. (Phase 3 gate) |
 | Defaults | Scalar defaults are Python-side only (`mapped_column(default=...)`). No `server_default`. (Phase 3 gate) |
 | New NOT NULL columns | `makemigrations` never writes a migration that fails on a table with rows. A constant default is added as a temporary database default and then dropped (Django's approach). `uuid4`, `datetime.now` and `date.today` factories fill old rows with `gen_random_uuid()`, `now()` or `CURRENT_DATE` (add nullable, fill, set NOT NULL). No default, or any other factory, is refused with an error. (Phase 6.1 fix) |
@@ -212,14 +212,13 @@ Full spec: `BUILD_PROMPT.md`, Phase 4 prompt. Summary:
 
 ---
 
-## Phases 5 to 10: outline
+## Phases 5 to 9: outline
 
 5. **Auto CRUD** (detailed in `BUILD_PROMPT.md`): per-model router at `/api/<app>/<model>` with list (field filters, limit/offset, total count), get, create, patch and delete. It shows in OpenAPI and can be opted out of via `Meta.api = False`. A custom route that duplicates a CRUD method+path is a startup error naming both. **This is the demo gate.**
 6. **Migrations**: Alembic, async `env.py`, one history per project, `target_metadata` from the registry. Spike: `Config` without `alembic.ini`. Renames show up as drop + add, and this is documented.
 7. **CLI** (Typer): `new` (also writes `.env` with a `fyro-insecure-` secret key and a `.gitignore` containing `.env`), `startapp`, `runserver` (uvicorn), `makemigrations`, `migrate`. Verify with a scripted end-to-end run of the 10-minute test.
 8. **Auth** (detailed in `BUILD_PROMPT.md`): built-in `fyro.auth` app, `User` model, `createsuperuser` command (moved from Phase 7), Argon2id password hashing, one database-backed opaque session token sent as a cookie or a Bearer header (**no JWT**: revocable logout, decided at Phase 8 planning), baseline CSRF header check for cookie writes, per-model permissions (`Meta.permissions`: read/write × public/authenticated/superuser; default read public, write authenticated).
 9. **Admin** (detailed in `BUILD_PROMPT.md`): at `/admin`, superusers only, HTMX + Jinja2 inside the package (htmx vendored, no CDN), server-rendered through the same query code, schemas and manager as auto CRUD: list, search, sort, bool/enum filters, add, edit, delete, bulk delete, user management. All models appear automatically (`Meta.admin = False` hides one). `?search=` and `?order_by=` join the public API. No relation picker in v0.1 because relations come in v0.2.
-10. **Rust engine**: profile real usage, then swap the `Engine` implementation via PyO3/maturin. The public API does not change.
 
 ## Not building (v0.1)
 
