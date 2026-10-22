@@ -5,10 +5,10 @@ import types
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, ClassVar, Union, get_args, get_origin
+from typing import Annotated, Any, ClassVar, Union, get_args, get_origin
 
 import sqlalchemy as sa
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from fyro import apps, db
@@ -55,6 +55,48 @@ def _unwrap_optional(tp: Any) -> tuple[Any, bool]:
         if len(args) == 2 and type(None) in args:
             return next(a for a in args if a is not type(None)), True
     return tp, False
+
+
+INT32 = (-(2**31), 2**31 - 1)  # Postgres INTEGER
+INT64 = (-(2**63), 2**63 - 1)  # Postgres BIGINT
+
+
+def _storable_text(value: str) -> str:
+    """Postgres text cannot hold NUL or text that is not valid UTF-8 (lone surrogates)."""
+    if "\x00" in value:
+        raise ValueError("must not contain NUL (\\x00) characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("must be valid UTF-8 text") from error
+    return value
+
+
+StorableText = Annotated[str, AfterValidator(_storable_text)]
+
+
+def _int_range(low: int, high: int) -> Any:
+    def check(value: int) -> int:
+        if not low <= value <= high:
+            raise ValueError(f"must be between {low} and {high} (the database column's range)")
+        return value
+
+    return check
+
+
+def _schema_type(tp: Any, column: sa.Column) -> Any:
+    """`tp` narrowed to what the column can store, so bad input is a 422, never a 500."""
+    base, nullable = _unwrap_optional(tp)
+    if base is str:
+        narrowed: Any = StorableText
+    elif base is int:
+        low, high = INT64 if isinstance(column.type, sa.BigInteger) else INT32
+        # A validator, not Ge/Le: pydantic keeps one ge/le per field, so a range constraint
+        # here would silently replace the user's own Field(ge=..., le=...).
+        narrowed = Annotated[int, AfterValidator(_int_range(low, high))]
+    else:
+        return tp
+    return narrowed | None if nullable else narrowed
 
 
 def _column_type(where: str, tp: Any, info: FieldInfo) -> Any:
@@ -231,7 +273,8 @@ class Model(DeclarativeBase):
         cls.__fyro_admin__ = meta.get("admin", True)
         cls.__fyro_list_display__ = list_display
         cls.__fyro_search_fields__ = search_fields
-        cls.Create, cls.Read, cls.Update = build_schemas(name, hints, fields, meta)
+        schema_hints = {n: _schema_type(tp, columns[n].column) for n, tp in hints.items()}
+        cls.Create, cls.Read, cls.Update = build_schemas(name, schema_hints, fields, meta)
         for error in (db.DoesNotExist, db.MultipleObjectsReturned):
             namespace = {"__module__": cls.__module__, "__qualname__": f"{name}.{error.__name__}"}
             setattr(cls, error.__name__, type(error.__name__, (error,), namespace))

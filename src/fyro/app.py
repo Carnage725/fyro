@@ -1,9 +1,12 @@
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, iter_route_contexts
 
@@ -26,6 +29,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 async def _not_found(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse({"detail": str(exc)}, status_code=404)
+
+
+async def _validation_error(request: Request, exc: Exception) -> Response:
+    # Same body as FastAPI's default 422, but ASCII-escaped: the default handler echoes the
+    # input, and a lone surrogate in it made rendering fail with a 500.
+    errors = exc.errors()  # type: ignore[attr-defined]
+    body = json.dumps({"detail": jsonable_encoder(errors)}, ensure_ascii=True)
+    return Response(body, status_code=422, media_type="application/json")
 
 
 def _check_duplicate_routes(app: FastAPI) -> None:
@@ -67,6 +78,7 @@ def create_app() -> FastAPI:
     app = FastAPI(lifespan=_lifespan)
     app.add_middleware(SessionMiddleware)
     app.add_exception_handler(db.DoesNotExist, _not_found)
+    app.add_exception_handler(RequestValidationError, _validation_error)
     for app_config in apps.registry.apps.values():
         prefix = f"/api/{app_config.label}"
         # Custom routes first, so /post/stats is not swallowed by the CRUD /post/{id}.

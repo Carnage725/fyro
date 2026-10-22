@@ -6,8 +6,10 @@ from pydantic import create_model
 from sqlalchemy.exc import IntegrityError
 
 from fyro.conf import ImproperlyConfigured
+from fyro.models.base import _storable_text
 
 UNIQUE_VIOLATION = "23505"  # Postgres SQLSTATE
+LIST_PARAMETERS = ("limit", "offset", "search", "order_by")
 
 
 def unique_violation(model: Any, error: IntegrityError) -> tuple[list[str], str]:
@@ -29,6 +31,11 @@ def _conflict(model: Any, error: IntegrityError) -> HTTPException:
     return HTTPException(409, unique_violation(model, error)[1])
 
 
+def _field_type(info: Any) -> Any:
+    """A schema field's type with its constraints (int range, storable text) still attached."""
+    return Annotated[info.annotation, *info.metadata] if info.metadata else info.annotation
+
+
 def readable_fields(model: Any) -> list[str]:
     return [field for field in model.Read.model_fields if field in model.__fyro_fields__]
 
@@ -46,6 +53,10 @@ def list_query(
     pk = next(iter(model.__table__.primary_key.columns)).key
     qs = model.objects.filter(**filters)
     if search:
+        try:
+            _storable_text(search)
+        except ValueError as error:
+            raise ValueError(f"search {error}.") from error
         qs = qs.search(search, model.__fyro_search_fields__)
     if not order_by:
         return qs.order_by(pk)
@@ -83,14 +94,24 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
             f"{name} has a composite primary key, which auto CRUD does not support. "
             f"Set Meta.api = False on {name}."
         )
+    clashes = [f for f in readable_fields(model) if f in LIST_PARAMETERS]
+    if clashes:
+        raise ImproperlyConfigured(
+            f"{name}.{clashes[0]}: {clashes[0]!r} is a query parameter of the auto CRUD list "
+            f"endpoint, so it cannot also filter a field. Rename the field, or set "
+            f"Meta.api = False on {name}."
+        )
     pk = primary_key[0].key
-    PkParam = Annotated[primary_key[0].type.python_type, Path(alias=pk)]
+    # Reuse the schema's narrowed type (int range, storable text) so a bad id is a 422.
+    pk_info = model.Read.model_fields.get(pk)
+    pk_type = _field_type(pk_info) if pk_info else primary_key[0].type.python_type
+    PkParam = Annotated[pk_type, Path(alias=pk)]
     Read, Create, Update = model.Read, model.Create, model.Update
     # write_only fields are not in Read, so they never become filters and can't be probed.
     Filters = create_model(
         f"{name}Filters",
         **{
-            field: (info.annotation | None, None)
+            field: (_field_type(info) | None, None)
             for field, info in Read.model_fields.items()
             if field in model.__fyro_fields__
         },
