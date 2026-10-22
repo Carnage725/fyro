@@ -34,6 +34,13 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Carnage725/fyro"
+Documentation = "https://carnage725.github.io/fyro/"
+Source = "https://github.com/Carnage725/fyro"
+Issues = "https://github.com/Carnage725/fyro/issues"
+Changelog = "https://github.com/Carnage725/fyro/blob/main/CHANGELOG.md"
+
 [project.scripts]
 fyro = "fyro.cli:main"
 

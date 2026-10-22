@@ -1,5 +1,8 @@
 site_name: fyro
 site_description: Fast, Yet Ridiculously Opinionated. A Django-feeling web framework on top of FastAPI.
+site_url: https://carnage725.github.io/fyro/
+repo_url: https://github.com/Carnage725/fyro
+repo_name: Carnage725/fyro
 copyright: MIT License
 
 theme:
