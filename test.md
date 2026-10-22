@@ -22,6 +22,7 @@ Four pieces carry the framework and get the heaviest attack. A silent bug in any
 | Engine, session, manager | `src/fyro/db/`, `src/fyro/models/manager.py` | `tests/test_db.py` |
 | Auto CRUD (phase 5) | `src/fyro/crud.py`, `src/fyro/app.py` (404 handler, route order, duplicate check) | `tests/test_crud.py` (DB), `tests/test_crud_startup.py` (startup errors) |
 | Migrations (phase 6) | `src/fyro/migrations/__init__.py`, `src/fyro/migrations/template/{env.py,script.py.mako}` | `tests/test_migrations.py` (own database `fyro_test_migrations`) |
+| Property tests (all) | the invariants in step 5 | `tests/test_properties.py` (API, DB), `tests/test_properties_schema.py` (schemas, no DB) |
 | CLI (phase 7) | `src/fyro/cli.py`, `[project.scripts]` in `pyproject.toml` | `tests/test_cli.py` (CliRunner, own database `fyro_test_cli`), `tests/test_cli_e2e.py` (real processes, marked `slow`, own database `fyro_test_e2e`) |
 
 ## Mindset
@@ -110,10 +111,11 @@ async def test_valid_title_never_500(title): ...
 - **Database:** the docker compose Postgres, URL from `FYRO_TEST_DATABASE_URL` (default `postgresql+asyncpg://fyro:fyro@localhost:5432/fyro`). Follow the pattern in `tests/test_db.py`: tables are created per module and a `TRUNCATE ... RESTART IDENTITY` runs before each test.
 - **Do not wrap tests in an outer transaction that rolls back.** fyro's request middleware commits before the response starts, and `fyro.db.session()` commits on clean exit. A rollback-wrapped test would turn those commits into savepoints and hide the exact bugs we need to see. Tests must observe real commits and real rollbacks by reading Postgres afterwards on a separate connection.
 - **Schema:** build the test schema by running fyro's real `migrate`, so every run also tests migrations.
-  - **Current state:** only `tests/test_migrations.py` does this. The phase 0 to 5 suites still use `Model.metadata.create_all`. Switching them is a pending, separate step: ask before doing it.
+  - **Current state:** every DB test module builds its schema with `tests/support.py::MigratedSchema` (`makemigrations` + `migrate` in a throwaway directory). It also asserts that a second `makemigrations` finds no difference.
+  - **Exception:** `tests/test_models_db.py` still calls `create_all`, because `create_all` is what it tests.
   - Migration tests need their own database, because `alembic_version` is global per database. Create and drop it with an autocommit connection, as `tests/test_migrations.py` does.
   - They also need `sys.dont_write_bytecode = True` when they rewrite `models.py` within one test, or a stale `.pyc` can hide the change.
-- **Global state is the main source of flakiness.** `get_settings` is cached, the registry (`fyro.apps.registry`) and `Model.metadata` are global, and fixture apps sit in `sys.modules`. Every test that touches them must reset them, as the existing fixtures do (`get_settings.cache_clear()`, a fresh `Registry`, `Model.metadata.clear()`, removing `blog` from `sys.modules`). A test that passes alone but fails in random order is a real bug in the test or in fyro.
+- **Global state is the main source of flakiness.** `get_settings` is cached, the registry (`fyro.apps.registry`), `Model.metadata` and the process-wide engine (`fyro.db.engine._async_engine`, created lazily by the first request or session) are global, and fixture apps sit in `sys.modules`. Every test that touches them must reset them, as the existing fixtures do (`get_settings.cache_clear()`, a fresh `Registry`, `Model.metadata.clear()`, `monkeypatch.setattr(db_engine, "_async_engine", None)`, removing `blog` and `fyro.auth*` from `sys.modules`). A leaked engine once pointed a later test at the wrong database, and only `pytest-randomly` found it. A test that passes alone but fails in random order is a real bug in the test or in fyro.
 - **Fakes are only for what fyro cannot run or control:** third-party HTTP (later: OAuth, email), the clock, randomness, and failures you cannot trigger on demand.
   - Write small fakes against a Protocol, not `MagicMock`.
   - Every fake must be able to fail, and every failure path gets a test: exception, timeout, malformed data, `asyncio.CancelledError`.
@@ -128,12 +130,12 @@ Python has no race detector, so attack concurrency directly with `asyncio.gather
 ```bash
 docker compose up -d
 uv run ruff check .
-uv run pytest -q -p no:cacheprovider --timeout=30   # run 3 times; pytest-randomly reshuffles each run
+uv run pytest -q -p no:cacheprovider               # run 3 times; pytest-randomly reshuffles each run, timeout 120 s per test
 uv run pytest -q --hypothesis-show-statistics
 PYTHONASYNCIODEBUG=1 uv run pytest -q -W error      # un-awaited coroutines, leaked tasks, unclosed connections
 ```
 
-**Tools not installed yet:** `hypothesis`, `pytest-randomly` and `pytest-timeout` are not in the dev group. There is no type checker (pyright or mypy) configured. Ask the user before running `uv add --dev ...`. Until then, record the missing checks in the report as gaps.
+`hypothesis`, `pytest-randomly` and `pytest-timeout` are in the dev group (`timeout = 120` in `pyproject.toml`). There is no type checker (pyright or mypy) configured: record that as a gap. CI runs the suite on Python 3.12, 3.13 and 3.14 with Postgres 16, plus Python 3.14 with Postgres 17 and 18, and the strict run once.
 
 Everything must pass. A flaky test is a failing test. Find the cause (shared global state, ordering, time, un-awaited tasks, leaked connections). Never rerun until green. Coverage (`--cov --cov-branch`, needs `pytest-cov`) is a hint for finding untested code, never a target. No `# pragma: no cover`.
 
@@ -287,7 +289,7 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
 - **Opting out:** `Meta.api = False` produces no routes and no OpenAPI entries. `Meta.api = "no"` gives `TypeError`. A composite primary key without `api = False` is `ImproperlyConfigured`.
 - **Escape hatches:** a custom `Meta.read_schema` without `from_attributes` still serializes ORM rows. A custom `create_schema` with a field the model lacks is unspecified in the contract, so ask before asserting.
 - **OpenAPI:** each model has `<Model>Create`, `Read`, `Update` and `Page` schemas, tag `<app>.<model>`, and summaries such as "Get Post".
-- **Known gap to attack:** a model field named `limit` or `offset` collides with the paging params, and nothing checks for it yet. Report what happens.
+- **Reserved names:** a readable field named `limit`, `offset`, `search` or `order_by` is an `ImproperlyConfigured` at `create_app()`, unless `Meta.api = False`.
 
 **Migrations (phase 6, built):**
 - **Adding a NOT NULL field to a table that already has rows (phase 6.1 fix).** This was reproduced at the phase 7 gate (`NotNullViolationError ... contains null values`) and fixed in phase 6.1.
@@ -295,17 +297,16 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
   - **Constants:** int, bool, str with a quote, float and Enum fill old rows, and leave no column default.
   - **Factories:** `uuid4` gives distinct values per row; `datetime.now` and `date.today` fill.
   - **Refusals:** no default, or an unknown factory, gives `ImproperlyConfigured` and writes no file.
+  - **Unique (fixed in the release pass):** a unique field with a constant default is refused, and a unique `uuid4` field fills each row with its own value.
+  - **Optional to required (fixed in the release pass):** NULL rows are filled from the constant default (quoted by SQLAlchemy) or the factory first; with no default the change is refused.
   - **Nullable:** a nullable field is a plain add.
   - **Still to attack:**
     - Decimal, date, datetime and UUID *constants*;
     - an Enum whose value contains a quote;
     - a default longer than the column (`max_length`);
-    - a unique field with a constant default on a table with 2+ rows (expected: the migration fails on the unique constraint; decide whether to refuse up front);
-    - changing an existing column from `T | None` to `T` while rows hold NULLs (not handled: expect a failing migration);
+    - a unique field with a `datetime.now` default on a table with 2+ rows (refused like a constant: `now()` gives every row the same value);
     - `date.today` vs the server timezone.
-  - Defaults are Python-side only (phase 3 decision), so the generated `add_column(..., nullable=False)` has no `server_default`.
-  - Postgres rejects that on a non-empty table (`column ... contains null values`).
-  - Expected: `migrate()` fails. This is a likely real gap between two locked decisions: report it, do not paper over it.
+  - **Why it mattered:** defaults are Python-side only (phase 3 decision), and Postgres rejects `ADD COLUMN ... NOT NULL` (or `SET NOT NULL`) on rows without a value.
 - **`makemigrations`:**
   - no changes gives `None` and no file;
   - the first file is `*_initial`, later ones `*_auto`, and a custom message becomes the slug;
@@ -358,7 +359,7 @@ Save the report as `tests/notes/<feature>.md` using the template below. It is no
   - run from the project root, from a subdirectory, and with `FYRO_SETTINGS` unset;
   - output carries no Alembic `Generating`/`INFO` lines unless `--verbose`;
   - the exit code is 1 for `ImproperlyConfigured` and for model `TypeError`s at load time;
-  - **a database error (Postgres down, `NotNullViolation`) currently prints a full traceback: decide whether that is wanted.**
+  - a database error (Postgres down, a missing database, a rejected login) prints one line naming the database with the password masked, and exits 1. Still to attack: an error raised mid-`migrate` (e.g. a hand-edited migration).
 - **Warnings:**
   - the app-not-installed warning names the folder and settings file, and does not fire for installed apps, the settings package or folders without `models.py`;
   - the unapplied-migrations warning fires before `migrate` and not after;
