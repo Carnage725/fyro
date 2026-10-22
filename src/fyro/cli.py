@@ -9,15 +9,18 @@ import keyword
 import logging
 import os
 import secrets
+import socket
 import sys
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Annotated, Any
 
+import asyncpg
 import sqlalchemy.exc
 import typer
 import uvicorn
+from sqlalchemy import make_url
 
 from fyro import apps, migrations
 from fyro.conf import SETTINGS_ENV_VAR, ImproperlyConfigured, Settings, get_settings
@@ -107,10 +110,37 @@ def _friendly_errors(command: Callable[..., Any]) -> Callable[..., Any]:
         try:
             return command(*args, **kwargs)
         except ImproperlyConfigured as error:
-            typer.secho(f"Error: {error}", fg="red", err=True)
-            raise typer.Exit(1) from error
+            message = str(error)
+        except (OSError, asyncpg.PostgresError, sqlalchemy.exc.DBAPIError) as error:
+            message = _database_error(error)
+            if message is None:
+                raise
+        typer.secho(f"Error: {message}", fg="red", err=True)
+        raise typer.Exit(1)
 
     return wrapper
+
+
+def _database_error(error: BaseException) -> str | None:
+    """One line for a database problem, naming the database (password masked); None if the
+    error is not about the database (an ordinary OSError keeps its traceback)."""
+    root = error
+    while root.__cause__ is not None:
+        root = root.__cause__
+    reason = " ".join(str(root).split())
+    # Settings loaded fine before any database work, so this cannot fail here.
+    where = make_url(get_settings().database_url).render_as_string(hide_password=True)
+    connection_failed = isinstance(root, (ConnectionError, socket.gaierror)) or (
+        isinstance(root, OSError) and "Connect call failed" in reason
+    )
+    if connection_failed:
+        return (
+            f"Cannot connect to the database at {where}: {reason}. "
+            "Is Postgres running? (docker compose up -d)"
+        )
+    if isinstance(error, (asyncpg.PostgresError, sqlalchemy.exc.DBAPIError)):
+        return f"Database error at {where}: {reason}"
+    return None
 
 
 def _warn(message: str) -> None:

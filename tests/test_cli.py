@@ -16,6 +16,7 @@ from fyro import Model, apps
 from fyro.apps import Registry
 from fyro.cli import app
 from fyro.conf import get_settings
+from fyro.db import engine as db_engine
 
 runner = CliRunner()
 BASE_URL = make_url(
@@ -75,6 +76,9 @@ def clean_state(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
     monkeypatch.setattr(apps, "registry", Registry())
+    # The process-wide engine is global state: anything a test creates (e.g. a request through
+    # SessionMiddleware) is discarded afterwards, so it can never point at another test's database.
+    monkeypatch.setattr(db_engine, "_async_engine", None)
     get_settings.cache_clear()
     yield
     Model.registry.dispose()
@@ -410,3 +414,24 @@ def test_createsuperuser_noinput_without_env_is_error(project, no_auth_modules):
 
 def test_createsuperuser_without_fyro_auth_is_error(project):
     assert_one_line_error(runner.invoke(app, ["createsuperuser", "--noinput"]), "fyro.auth")
+
+
+# --- database errors are one line, never a traceback or a leaked password -----
+
+
+@pytest.mark.parametrize(
+    ("url", "fragment"),
+    [
+        ("postgresql+asyncpg://fyro:fyro@127.0.0.1:1/fyro", "Cannot connect to the database"),
+        (str(BASE_URL.set(database="fyro_no_such_db").render_as_string(hide_password=False)), "does not exist"),
+        (str(BASE_URL.set(password="wrong-pass").render_as_string(hide_password=False)), "password"),
+    ],
+    ids=["unreachable", "missing-database", "wrong-password"],
+)
+@pytest.mark.parametrize("command", [["migrate"], ["makemigrations"]])
+def test_database_errors_are_one_line(project, monkeypatch, url, fragment, command):
+    monkeypatch.setenv("FYRO_DATABASE_URL", url)
+    (project / "migrations").mkdir()
+    result = runner.invoke(app, command)
+    assert_one_line_error(result, fragment)
+    assert "wrong-pass" not in result.output and ":fyro@" not in result.output
