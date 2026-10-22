@@ -1,6 +1,8 @@
 # fyro
 
-**Fast, Yet Ridiculously Opinionated.** A web framework on top of FastAPI that feels like Django.
+**Fast, Yet Ridiculously Opinionated.** 
+
+A web framework on top of FastAPI that feels like Django.
 
 FastAPI is the engine. fyro adds what a project needs around it, with one obvious place for everything: one model class gives you a Postgres table, `Create`/`Read`/`Update` schemas, a REST API with docs, migrations and an admin page. Database sessions, a command line, users, login and permissions are built in.
 
