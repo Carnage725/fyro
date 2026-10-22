@@ -15,6 +15,9 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+fyro = "fyro.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.10.11,<0.11"]
 build-backend = "uv_build"
@@ -23,6 +26,7 @@ build-backend = "uv_build"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["slow: end-to-end tests that start real processes"]
 
 [dependency-groups]
 dev = [
