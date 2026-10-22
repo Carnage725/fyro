@@ -378,3 +378,72 @@ def test_not_null_field_without_usable_default_is_refused(project, field, import
     with pytest.raises(ImproperlyConfigured, match=r"Post\.(views|token).*(default|optional)"):
         add_field_to_table_with_rows(project, field, imports)
     assert len(revision_files(root)) == 1  # no broken migration written
+
+
+def test_unique_field_with_constant_default_on_table_with_rows_is_refused(project):
+    # bug: every existing row would get the same value, which the unique constraint rejects
+    root, _ = project
+    with pytest.raises(ImproperlyConfigured, match=r"Post\.code.*unique"):
+        add_field_to_table_with_rows(project, 'code: str = Field(default="x", max_length=20, unique=True)')
+    assert len(revision_files(root)) == 1
+
+
+def test_unique_uuid_field_on_table_with_rows_is_fine(project):
+    add_field_to_table_with_rows(
+        project, "token: uuid.UUID = Field(default_factory=uuid.uuid4, unique=True)", "import uuid\n    "
+    )
+    migrations.migrate()
+    tokens = run_sql(DB_URL, "SELECT token FROM blog_post")
+    assert len({token for (token,) in tokens}) == 2
+
+
+# --- making an optional field required --------------------------------------
+
+
+def optional_then_required(project, before: str, after: str, imports: str = ""):
+    """Migrate with an optional field, insert one NULL and one filled row, then require it."""
+    _, write_models = project
+    source = POST.replace("from fyro import Field, Model", imports + "from fyro import Field, Model")
+    write_models(source + f"        {before}\n")
+    migrations.makemigrations()
+    migrations.migrate()
+    run_sql(
+        DB_URL,
+        "INSERT INTO blog_post (title, slug, author) VALUES ('a', 'a', 'x'), ('b', 'b', 'x')",
+    )
+    write_models(source + f"        {after}\n")
+    return migrations.makemigrations()
+
+
+def test_optional_to_required_fills_nulls_from_constant_default(project):
+    optional_then_required(project, "subtitle: str | None = None", 'subtitle: str = "untitled"')
+    run_sql(DB_URL, "UPDATE blog_post SET subtitle = 'kept' WHERE slug = 'b'")  # one row non-NULL
+    migrations.migrate()
+    assert run_sql(DB_URL, "SELECT subtitle FROM blog_post ORDER BY slug") == [("untitled",), ("kept",)]
+    assert column_state("subtitle") == ("NO", None)
+    assert migrations.makemigrations() is None
+
+
+def test_optional_to_required_with_quote_in_default(project):
+    optional_then_required(project, "subtitle: str | None = None", """subtitle: str = "it's" """)
+    migrations.migrate()
+    assert run_sql(DB_URL, "SELECT DISTINCT subtitle FROM blog_post") == [("it's",)]
+
+
+def test_optional_to_required_uuid_factory_gives_each_row_its_own_value(project):
+    optional_then_required(
+        project,
+        "token: uuid.UUID | None = None",
+        "token: uuid.UUID = Field(default_factory=uuid.uuid4)",
+        "import uuid\n    ",
+    )
+    migrations.migrate()
+    tokens = run_sql(DB_URL, "SELECT token FROM blog_post")
+    assert len({token for (token,) in tokens}) == 2 and all(token for (token,) in tokens)
+
+
+def test_optional_to_required_without_default_is_refused(project):
+    root, _ = project
+    with pytest.raises(ImproperlyConfigured, match=r"Post\.subtitle.*default"):
+        optional_then_required(project, "subtitle: str | None = None", "subtitle: str")
+    assert len(revision_files(root)) == 1

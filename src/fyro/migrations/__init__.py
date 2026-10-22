@@ -14,6 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from alembic.operations import ops
@@ -115,11 +116,12 @@ def _warn_renames(upgrade_ops: ops.UpgradeOps) -> None:
 
 
 def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
-    """Rewrite NOT NULL add_column ops so rows that already exist get a value.
+    """Rewrite ops that would fail on a table with rows, so those rows get a value.
 
-    Postgres refuses ADD COLUMN ... NOT NULL on a non-empty table without a value, and fyro's
-    defaults live in Python only. A constant is added as a temporary database default, then
-    dropped (Django's approach); a known factory fills rows with its SQL equivalent.
+    Postgres refuses ADD COLUMN ... NOT NULL, and SET NOT NULL over NULLs, without a value,
+    and fyro's defaults live in Python only. A constant is used once as a temporary database
+    default (Django's approach) or an UPDATE; a known factory fills rows with its SQL
+    equivalent. Anything else is refused, so a migration never fails on existing data.
     """
     models = {
         model.__tablename__: model
@@ -129,21 +131,46 @@ def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
     for table_ops in upgrade_ops.ops:
         if not isinstance(table_ops, ops.ModifyTableOps):
             continue
+        model = models[table_ops.table_name]
         rewritten: list[Any] = []
         for op in table_ops.ops:
             column = getattr(op, "column", None)
             if isinstance(op, ops.AddColumnOp) and not column.nullable and column.server_default is None:
-                rewritten.extend(_fill_ops(models[table_ops.table_name], op))
+                rewritten.extend(_fill_added_column(model, op))
+            elif isinstance(op, ops.AlterColumnOp) and op.modify_nullable is False:
+                rewritten.extend(_fill_nulls(model, op))
             else:
                 rewritten.append(op)
         table_ops.ops = rewritten
 
 
-def _fill_ops(model: Any, add: ops.AddColumnOp) -> list[Any]:
-    table, column = add.table_name, add.column
-    info = model.__fyro_fields__[column.name]
+def _fill_value(model: Any, name: str) -> tuple[str, Any]:
+    """("constant", value) or ("sql", expression) for filling existing rows; refuses otherwise."""
+    info = model.__fyro_fields__[name]
+    where = f"{model.__name__}.{name}"
     if info.default_factory is None and info.default is not MISSING:
+        if info.unique:
+            raise ImproperlyConfigured(
+                f"{where}: a unique column cannot be filled with one constant default for the "
+                "rows already there (they would all get the same value). Add it as optional "
+                "(T | None = None) first, fill unique values, then make it required."
+            )
         value = info.default.value if isinstance(info.default, enum.Enum) else info.default
+        return "constant", value
+    sql = SQL_FOR_FACTORY.get(info.default_factory)
+    if sql is not None and (not info.unique or info.default_factory is uuid.uuid4):
+        return "sql", sql
+    raise ImproperlyConfigured(
+        f"{where}: the rows already in the table need a value for this required column. Give "
+        "it a constant default (e.g. = 0), use default_factory=uuid.uuid4, datetime.now or "
+        "date.today (only uuid4 for a unique column), or make it optional (T | None = None)."
+    )
+
+
+def _fill_added_column(model: Any, add: ops.AddColumnOp) -> list[Any]:
+    table, column = add.table_name, add.column
+    kind, value = _fill_value(model, column.name)
+    if kind == "constant":
         return [
             ops.AddColumnOp(
                 table, Column(column.name, column.type, nullable=False, server_default=str(value))
@@ -156,22 +183,33 @@ def _fill_ops(model: Any, add: ops.AddColumnOp) -> list[Any]:
                 modify_server_default=None,
             ),
         ]
-    sql = SQL_FOR_FACTORY.get(info.default_factory)
-    if sql is not None:
-        quote = postgresql.dialect().identifier_preparer.quote
-        return [
-            ops.AddColumnOp(table, Column(column.name, column.type, nullable=True)),
-            ops.ExecuteSQLOp(f"UPDATE {quote(table)} SET {quote(column.name)} = {sql}"),
-            ops.AlterColumnOp(
-                table, column.name, existing_type=column.type, modify_nullable=False
-            ),
-        ]
-    raise ImproperlyConfigured(
-        f"{model.__name__}.{column.name}: a new NOT NULL column on an existing table needs a "
-        "value for the rows already there. Give it a constant default (e.g. = 0), use "
-        "default_factory=uuid.uuid4, datetime.now or date.today, or make it optional "
-        "(T | None = None)."
-    )
+    quote = postgresql.dialect().identifier_preparer.quote
+    return [
+        ops.AddColumnOp(table, Column(column.name, column.type, nullable=True)),
+        ops.ExecuteSQLOp(f"UPDATE {quote(table)} SET {quote(column.name)} = {value}"),
+        ops.AlterColumnOp(table, column.name, existing_type=column.type, modify_nullable=False),
+    ]
+
+
+def _fill_nulls(model: Any, alter: ops.AlterColumnOp) -> list[Any]:
+    """`T | None` -> `T`: fill the NULLs first, then SET NOT NULL."""
+    table, name = alter.table_name, alter.column_name
+    kind, value = _fill_value(model, name)
+    if kind == "constant":
+        # Rendered by SQLAlchemy so quoting is always right (e.g. a default of "it's").
+        value_type = sa.String() if isinstance(alter.existing_type, sa.Enum) else alter.existing_type
+        value = str(
+            sa.literal(value, type_=value_type).compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+    quote = postgresql.dialect().identifier_preparer.quote
+    return [
+        ops.ExecuteSQLOp(
+            f"UPDATE {quote(table)} SET {quote(name)} = {value} WHERE {quote(name)} IS NULL"
+        ),
+        alter,
+    ]
 
 
 def makemigrations(message: str | None = None) -> Path | None:
