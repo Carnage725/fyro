@@ -5,9 +5,12 @@ import enum
 import json
 import math
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote, urlencode
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -97,6 +100,23 @@ def render(request: Request, template: str, user: Any, status: int = 200, **cont
 def redirect(url: str) -> Response:
     """HTMX follows HX-Redirect with a full page load."""
     return Response(status_code=200, headers={"HX-Redirect": url})
+
+
+def wants_modal(request: Request) -> bool:
+    """A form or confirm request aimed at the persistent <dialog>."""
+    return request.headers.get("HX-Target") == "modal-content"
+
+
+def modal_success() -> Response:
+    """Close the dialog and refresh the list in place; 204 means no swap."""
+    return Response(
+        status_code=204,
+        headers={"HX-Trigger": json.dumps({"modal-close": True, "list-refresh": True})},
+    )
+
+
+def form_template(request: Request) -> str:
+    return "_form_modal.html" if wants_modal(request) else "form.html"
 
 
 async def form_data(request: Request) -> dict[str, list[str]]:
@@ -190,8 +210,26 @@ async def index(request: Request, user: Superuser) -> HTMLResponse:
     return render(request, "index.html", user, counts=counts)
 
 
+def cell_kind(entry: Entry, name: str) -> str:
+    """How a list cell should render: badges for booleans, alignment for numbers."""
+    tp, _ = _unwrap_optional(entry.model.Read.model_fields[name].annotation)
+    if tp is bool:
+        return "bool"
+    if isinstance(tp, type) and issubclass(tp, enum.Enum):
+        return "enum"
+    if tp in (int, float, Decimal):
+        return "number"
+    if tp is datetime:
+        return "datetime"
+    if tp is date:
+        return "date"
+    if tp is UUID:
+        return "uuid"
+    return "text"
+
+
 def filter_options(entry: Entry) -> list[tuple[str, list[tuple[str, str]]]]:
-    """Sidebar filters: bool and Enum fields that are listed in the table's Read schema."""
+    """Filter chips: bool and Enum fields that are listed in the table's Read schema."""
     options = []
     for name in entry.model.Read.model_fields:
         if name not in entry.model.__fyro_fields__:
@@ -233,14 +271,30 @@ async def list_page(
             del merged["page"]
         return entry.url + ("?" + urlencode(merged) if merged else "")
 
+    pk = pk_name(entry)
     columns = []
     for name in entry.model.__fyro_list_display__:
         flipped = name if order_by != name else f"-{name}"
         arrow = " ↑" if order_by == name else " ↓" if order_by == f"-{name}" else ""
-        columns.append({"label": forms.label(name), "sort_url": url(order_by=flipped, page=1), "arrow": arrow})
-    pk = pk_name(entry)
+        columns.append(
+            {
+                "label": forms.label(name),
+                "sort_url": url(order_by=flipped, page=1),
+                "arrow": arrow,
+                "kind": "id" if name == pk else cell_kind(entry, name),
+            }
+        )
     table = [
-        {"pk": getattr(row, pk), "cells": [forms.display(getattr(row, n)) for n in entry.model.__fyro_list_display__]}
+        {
+            "pk": getattr(row, pk),
+            "cells": [
+                {
+                    "text": forms.display(getattr(row, n)),
+                    "kind": "id" if n == pk else cell_kind(entry, n),
+                }
+                for n in entry.model.__fyro_list_display__
+            ],
+        }
         for row in rows
     ]
     pages = max(math.ceil(total / PAGE_SIZE), 1)
@@ -258,7 +312,7 @@ async def add_page(
 ) -> HTMLResponse:
     entry = find_entry(app_label, segment)
     return render(
-        request, "form.html", user, entry=entry,
+        request, form_template(request), user, entry=entry,
         fields=add_fields(entry), action=f"{entry.url}/add", title=f"Add {entry.model.__name__}",
     )
 
@@ -318,11 +372,11 @@ async def add(
     if not errors:
         try:
             await entry.model.objects.create(**values)
-            return redirect(entry.url)
+            return modal_success() if wants_modal(request) else redirect(entry.url)
         except IntegrityError as error:
             status, errors = conflict_errors(entry, error)
     return render(
-        request, "form.html", user, status=status, entry=entry,
+        request, form_template(request), user, status=status, entry=entry,
         fields=add_fields(entry, errors, form), action=f"{entry.url}/add",
         title=f"Add {entry.model.__name__}", error=errors.get("__all__", ""),
     )
@@ -339,22 +393,32 @@ async def bulk_delete(
 ) -> Response:
     entry = find_entry(app_label, segment)
     form = await form_data(request)
+    modal = wants_modal(request)
     pks = [parse_pk(entry, raw) for raw in form.get("ids", [])]
     rows = [row for pk in pks if (row := await entry.model.objects.filter(**{pk_name(entry): pk}).first())]
     if entry.is_user and user.id in pks:
-        return confirm(request, user, entry, rows, status=422, error="You cannot delete yourself.")
+        return confirm(request, user, entry, rows, status=422, error="You cannot delete yourself.", modal=modal)
     if form.get("confirm", [""])[0] != "yes" or not rows:
-        return confirm(request, user, entry, rows)
+        return confirm(request, user, entry, rows, modal=modal)
     for row in rows:
         await entry.model.objects.filter(**{pk_name(entry): getattr(row, pk_name(entry))}).delete()
-    return redirect(entry.url)
+    return modal_success() if modal else redirect(entry.url)
 
 
-def confirm(request: Request, user: Any, entry: Entry, rows: list[Any], status: int = 200, error: str = "") -> HTMLResponse:
+def confirm(
+    request: Request,
+    user: Any,
+    entry: Entry,
+    rows: list[Any],
+    status: int = 200,
+    error: str = "",
+    modal: bool = False,
+) -> HTMLResponse:
     pk = pk_name(entry)
     shown = entry.model.__fyro_list_display__
     return render(
-        request, "confirm_delete.html", user, status=status, entry=entry, error=error,
+        request, "_confirm_modal.html" if modal else "confirm_delete.html", user,
+        status=status, entry=entry, error=error, modal=modal,
         items=[" · ".join(forms.display(getattr(row, n)) for n in shown) for row in rows],
         ids=[getattr(row, pk) for row in rows],
         action=f"{entry.url}/bulk-delete",
@@ -368,7 +432,7 @@ async def edit_page(
     entry = find_entry(app_label, segment)
     row = await get_row(entry, parse_pk(entry, pk))
     return render(
-        request, "form.html", user, entry=entry, fields=edit_fields(entry, row),
+        request, form_template(request), user, entry=entry, fields=edit_fields(entry, row),
         action=f"{entry.url}/{pk}", title=f"Edit {entry.model.__name__} {pk}",
         delete_url=f"{entry.url}/{pk}/delete",
     )
@@ -402,11 +466,11 @@ async def edit(
                 from fyro.auth.sessions import end_user_sessions
 
                 await end_user_sessions(pk_value)
-            return redirect(entry.url)
+            return modal_success() if wants_modal(request) else redirect(entry.url)
         except IntegrityError as error:
             status, errors = conflict_errors(entry, error)
     return render(
-        request, "form.html", user, status=status, entry=entry,
+        request, form_template(request), user, status=status, entry=entry,
         fields=edit_fields(entry, row, errors, form), action=f"{entry.url}/{pk}",
         title=f"Edit {entry.model.__name__} {pk}", delete_url=f"{entry.url}/{pk}/delete",
         error=errors.get("__all__", ""),
@@ -419,7 +483,7 @@ async def delete_page(
 ) -> HTMLResponse:
     entry = find_entry(app_label, segment)
     row = await get_row(entry, parse_pk(entry, pk))
-    return confirm(request, user, entry, [row])
+    return confirm(request, user, entry, [row], modal=wants_modal(request))
 
 
 @router.post("/{app_label}/{segment}/{pk}/delete")
@@ -429,7 +493,10 @@ async def delete(
     entry = find_entry(app_label, segment)
     pk_value = parse_pk(entry, pk)
     row = await get_row(entry, pk_value)
+    modal = wants_modal(request)
     if entry.is_user and pk_value == user.id:
-        return confirm(request, user, entry, [row], status=422, error="You cannot delete yourself.")
+        return confirm(
+            request, user, entry, [row], status=422, error="You cannot delete yourself.", modal=modal
+        )
     await entry.model.objects.filter(**{pk_name(entry): pk_value}).delete()
-    return redirect(entry.url)
+    return modal_success() if modal else redirect(entry.url)

@@ -1,9 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Forbidden · fyro admin{% endblock %}
 {% block bare %}
-<div class="card">
-  <h1>Forbidden</h1>
-  <p>You do not have permission to use the admin. Only superusers can.</p>
-  <form method="post" action="/admin/logout"><button type="submit" class="button">Log out</button></form>
+<div class="auth-card-wrap">
+  <div class="card status-card">
+    <a class="brand" href="/admin" aria-label="fyro admin home">
+      <span class="brand-mark" aria-hidden="true">ƒ</span>
+      <span class="brand-name">fyro</span>
+      <span class="brand-context">admin</span>
+    </a>
+    <span class="status-code">403 · Forbidden</span>
+    <h1>You don’t have access</h1>
+    <p>You do not have permission to use the admin. Only superusers can.</p>
+    <form method="post" action="/admin/logout">
+      <button type="submit" class="button">Log out</button>
+    </form>
+    <p class="auth-foot">fyro admin</p>
+  </div>
 </div>
 {% endblock %}

@@ -1,0 +1,41 @@
+{% for f in fields %}
+  {% set help_id = 'h-' ~ f.name if f.help else '' %}
+  {% set error_id = 'e-' ~ f.name if f.error else '' %}
+  {% set described = (help_id ~ ' ' ~ error_id)|trim %}
+  <div class="field{% if f.error %} invalid{% endif %}{% if f.widget == 'textarea' %} field-wide{% endif %}">
+    {% if f.readonly %}
+      <div class="field-label">{{ f.label }}</div>
+      <div class="readonly" id="f-{{ f.name }}">{{ f.value }}</div>
+    {% elif f.widget == "checkbox" %}
+      <label class="inline">
+        <input type="checkbox" name="{{ f.name }}" {% if f.checked %}checked{% endif %}
+               {% if f.error %}aria-invalid="true"{% endif %} {% if described %}aria-describedby="{{ described }}"{% endif %}>
+        <span>{{ f.label }}</span>
+      </label>
+    {% else %}
+      <label for="f-{{ f.name }}">{{ f.label }}{% if f.required %}<span class="req" aria-hidden="true">*</span>{% endif %}</label>
+      {% if f.widget == "textarea" %}
+        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="5" {% if f.required %}required{% endif %}
+                  {% if f.error %}aria-invalid="true"{% endif %} {% if described %}aria-describedby="{{ described }}"{% endif %}>{{ f.value }}</textarea>
+      {% elif f.widget == "select" %}
+        <select id="f-{{ f.name }}" name="{{ f.name }}" {% if f.required %}required{% endif %}
+                {% if f.error %}aria-invalid="true"{% endif %} {% if described %}aria-describedby="{{ described }}"{% endif %}>
+          {% for value, text in f.options %}<option value="{{ value }}" {% if value == f.value %}selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+      {% else %}
+        <input id="f-{{ f.name }}" name="{{ f.name }}" type="{{ f.widget }}" value="{{ f.value }}"
+               {% if f.widget == "number" %}step="any"{% endif %} {% if f.required %}required{% endif %}
+               {% if f.error %}aria-invalid="true"{% endif %} {% if described %}aria-describedby="{{ described }}"{% endif %}>
+      {% endif %}
+    {% endif %}
+    {% if f.help %}<div class="help" id="h-{{ f.name }}">{{ f.help }}</div>{% endif %}
+    {% if f.error %}
+      <div class="error" id="e-{{ f.name }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/>
+        </svg>
+        <span>{{ f.error }}</span>
+      </div>
+    {% endif %}
+  </div>
+{% endfor %}

@@ -1,0 +1,42 @@
+<div class="modal-form">
+  <header class="modal-head">
+    <p class="modal-eyebrow">{{ entry.app_label }} / {{ entry.plural }}</p>
+    <h2 id="modal-heading">{{ title }}</h2>
+  </header>
+  {% if error %}
+    <p class="alert" role="alert">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/>
+      </svg>
+      {{ error }}
+    </p>
+  {% endif %}
+  <form method="post" action="{{ action }}"
+        hx-post="{{ action }}" hx-target="#modal-content" hx-swap="innerHTML">
+    <div class="form-fields">
+      {% include "_form_fields.html" %}
+      {% if delete_url %}
+        <div class="form-danger field-wide">
+          <p>Deleting this {{ entry.model.__name__|lower }} cannot be undone.</p>
+          <button type="button" class="button danger"
+                  hx-get="{{ delete_url }}" hx-target="#modal-content" hx-swap="innerHTML"
+                  hx-push-url="false" data-modal-open>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/>
+            </svg>
+            Delete {{ entry.model.__name__|lower }}
+          </button>
+        </div>
+      {% endif %}
+    </div>
+    <div class="form-actions">
+      <button type="button" class="button" data-modal-close>Cancel</button>
+      <button type="submit" class="button primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12l5 5L20 7"/>
+        </svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>

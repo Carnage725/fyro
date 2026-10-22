@@ -1,3 +1,40 @@
+{% macro brand() -%}
+<a class="brand" href="/admin" aria-label="fyro admin home">
+  <span class="brand-mark" aria-hidden="true">ƒ</span>
+  <span class="brand-name">fyro</span>
+  <span class="brand-context">admin</span>
+</a>
+{%- endmacro %}
+
+{% macro navigation() -%}
+{% for app_label, items in nav.items() %}
+  <div class="nav-group">
+    <div class="nav-app">{{ app_label }}</div>
+    {% for item in items %}
+      {% set active = entry and entry.url == item.url %}
+      <a class="nav-link{% if active %} active{% endif %}" href="{{ item.url }}"{% if active %} aria-current="page"{% endif %}>{{ item.plural }}</a>
+    {% endfor %}
+  </div>
+{% endfor %}
+{%- endmacro %}
+
+{% macro user_card() -%}
+<div class="whoami">
+  <span class="avatar" aria-hidden="true">{{ user.username[:1]|upper }}</span>
+  <span class="whoami-id">
+    <span class="whoami-name">{{ user.username }}</span>
+    <span class="whoami-role">Superuser</span>
+  </span>
+  <form method="post" action="/admin/logout">
+    <button type="submit" class="logout">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 18l6-6-6-6"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+      </svg>
+      <span>Log out</span>
+    </button>
+  </form>
+</div>
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -5,29 +42,55 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="htmx-config" content="{{ htmx_config }}">
   <title>{% block title %}fyro admin{% endblock %}</title>
+  <link rel="icon" href="/admin/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/admin/static/admin.css">
   <script src="/admin/static/htmx.min.js"></script>
+  <script src="/admin/static/admin.js" defer></script>
 </head>
-<body hx-boost="true">
+<body class="{% block body_class %}{% endblock %}" hx-boost="true">
+<a class="skip-link" href="#main">Skip to content</a>
 {% if user %}
   <div class="layout">
-    <nav class="sidebar">
-      <a class="brand" href="/admin">fyro admin</a>
-      {% for app_label, items in nav.items() %}
-        <div class="nav-app">{{ app_label }}</div>
-        {% for item in items %}
-          <a class="nav-link{% if entry and entry.url == item.url %} active{% endif %}" href="{{ item.url }}">{{ item.plural }}</a>
-        {% endfor %}
-      {% endfor %}
-      <form class="whoami" method="post" action="/admin/logout">
-        <span>{{ user.username }}</span>
-        <button type="submit" class="link">Log out</button>
-      </form>
-    </nav>
-    <main class="content">{% block content %}{% endblock %}</main>
+    <aside class="sidebar">
+      {{ brand() }}
+      <nav class="nav" aria-label="Admin">
+        {{ navigation() }}
+      </nav>
+      {{ user_card() }}
+    </aside>
+    <div class="main-column">
+      <header class="topbar">
+        {{ brand() }}
+        <details class="mobile-menu">
+          <summary>
+            <span>Menu</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </summary>
+          <div class="mobile-menu-panel">
+            <nav class="nav" aria-label="Admin">
+              {{ navigation() }}
+            </nav>
+            {{ user_card() }}
+          </div>
+        </details>
+      </header>
+      <main id="main" class="content" tabindex="-1">{% block content %}{% endblock %}</main>
+    </div>
   </div>
+  <dialog id="modal" class="modal" aria-labelledby="modal-heading">
+    <div class="modal-frame">
+      <button type="button" class="modal-close" data-modal-close aria-label="Close dialog">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M6 6l12 12"/><path d="M18 6L6 18"/>
+        </svg>
+      </button>
+      <div id="modal-content" class="modal-content"></div>
+    </div>
+  </dialog>
 {% else %}
-  <main class="center">{% block bare %}{% endblock %}</main>
+  <main id="main" class="auth-main" tabindex="-1">{% block bare %}{% endblock %}</main>
 {% endif %}
 </body>
 </html>
