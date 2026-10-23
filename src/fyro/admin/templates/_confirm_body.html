@@ -1,0 +1,50 @@
+<div class="confirm-head">
+  <span class="confirm-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.3 4.3L2.6 18a1.8 1.8 0 0 0 1.6 2.7h15.6a1.8 1.8 0 0 0 1.6-2.7L13.7 4.3a2 2 0 0 0-3.4 0z"/><path d="M12 9v5"/><path d="M12 17h.01"/>
+    </svg>
+  </span>
+  <div>
+    {% if ids %}
+      {% set noun = entry.plural|lower if ids|length != 1 else entry.model.__name__|lower %}
+      <h2 id="modal-heading">Delete {{ ids|length }} {{ noun }}?</h2>
+      <p>This cannot be undone.</p>
+    {% else %}
+      <h2 id="modal-heading">Nothing selected</h2>
+      <p>Select at least one row before deleting.</p>
+    {% endif %}
+  </div>
+</div>
+{% if error %}
+  <p class="alert" role="alert">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/>
+    </svg>
+    {{ error }}
+  </p>
+{% endif %}
+{% if items %}
+  <ul class="items">
+    {% for item in items %}<li>{{ item }}</li>{% endfor %}
+  </ul>
+{% endif %}
+<form method="post" action="{{ action }}"
+      {% if modal %}hx-post="{{ action }}" hx-target="#modal-content" hx-swap="innerHTML"{% endif %}>
+  {% for id in ids %}<input type="hidden" name="ids" value="{{ id }}">{% endfor %}
+  <input type="hidden" name="confirm" value="yes">
+  <div class="confirm-actions">
+    {% if modal %}
+      <button type="button" class="button" data-modal-close data-autofocus>Cancel</button>
+    {% else %}
+      <a class="button" href="{{ entry.url }}">Cancel</a>
+    {% endif %}
+    {% if not error and ids %}
+      <button type="submit" class="button danger solid">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/>
+        </svg>
+        Yes, delete
+      </button>
+    {% endif %}
+  </div>
+</form>

@@ -1,37 +1,53 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} · fyro admin{% endblock %}
+{% block body_class %}form-view{% endblock %}
 {% block content %}
-<div class="head">
-  <h1><a class="muted" href="{{ entry.url }}">{{ entry.plural }}</a> / {{ title }}</h1>
-  {% if delete_url %}<a class="button danger" href="{{ delete_url }}">Delete</a>{% endif %}
-</div>
-{% if error %}<p class="alert">{{ error }}</p>{% endif %}
-<form class="panel form" method="post" action="{{ action }}">
-  {% for f in fields %}
-    <div class="field{% if f.error %} invalid{% endif %}">
-      {% if f.widget == "checkbox" %}
-        <label class="inline"><input type="checkbox" name="{{ f.name }}" {% if f.checked %}checked{% endif %} {% if f.readonly %}disabled{% endif %}> {{ f.label }}</label>
-      {% else %}
-        <label for="f-{{ f.name }}">{{ f.label }}{% if f.required %} *{% endif %}</label>
-        {% if f.readonly %}
-          <div class="readonly">{{ f.value }}</div>
-        {% elif f.widget == "textarea" %}
-          <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="5" {% if f.required %}required{% endif %}>{{ f.value }}</textarea>
-        {% elif f.widget == "select" %}
-          <select id="f-{{ f.name }}" name="{{ f.name }}">
-            {% for value, text in f.options %}<option value="{{ value }}" {% if value == f.value %}selected{% endif %}>{{ text }}</option>{% endfor %}
-          </select>
-        {% else %}
-          <input id="f-{{ f.name }}" name="{{ f.name }}" type="{{ f.widget }}" value="{{ f.value }}" {% if f.widget == "number" %}step="any"{% endif %} {% if f.required %}required{% endif %}>
-        {% endif %}
-      {% endif %}
-      {% if f.help %}<div class="help">{{ f.help }}</div>{% endif %}
-      {% if f.error %}<div class="error">{{ f.error }}</div>{% endif %}
-    </div>
-  {% endfor %}
-  <div class="actions">
-    <button type="submit" class="button primary">Save</button>
-    <a class="button" href="{{ entry.url }}">Cancel</a>
+<div class="page-head">
+  <div>
+    <nav class="crumbs" aria-label="Breadcrumb">
+      <a href="/admin">Admin</a>
+      <span class="crumb-sep" aria-hidden="true">/</span>
+      <a href="{{ entry.url }}">{{ entry.plural }}</a>
+    </nav>
+    <h1>{{ title }}</h1>
+    {% if fields|selectattr('required')|list %}
+      <p class="page-meta">Fields marked <span class="req">*</span> are required.</p>
+    {% endif %}
   </div>
-</form>
+</div>
+<div class="form-page">
+  {% if error %}
+    <p class="alert" role="alert">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/>
+      </svg>
+      {{ error }}
+    </p>
+  {% endif %}
+  <form class="form-panel" method="post" action="{{ action }}">
+    <div class="form-fields">
+      {% include "_form_fields.html" %}
+      {% if delete_url %}
+        <div class="form-danger field-wide">
+          <p>Deleting this {{ entry.model.__name__|lower }} cannot be undone.</p>
+          <a class="button danger" href="{{ delete_url }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/>
+            </svg>
+            Delete {{ entry.model.__name__|lower }}
+          </a>
+        </div>
+      {% endif %}
+    </div>
+    <div class="form-actions">
+      <a class="button" href="{{ entry.url }}">Cancel</a>
+      <button type="submit" class="button primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12l5 5L20 7"/>
+        </svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>
 {% endblock %}

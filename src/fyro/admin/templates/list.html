@@ -1,64 +1,193 @@
 {% extends "base.html" %}
 {% block title %}{{ entry.plural }} · fyro admin{% endblock %}
+{% block body_class %}list-view{% endblock %}
 {% block content %}
-<div class="head">
-  <h1><span class="muted">{{ entry.app_label }} /</span> {{ entry.plural }}</h1>
-  <a class="button primary" href="{{ entry.url }}/add">+ Add</a>
+<div class="page-head">
+  <div>
+    <nav class="crumbs" aria-label="Breadcrumb">
+      <a href="/admin">Admin</a>
+      <span class="crumb-sep" aria-hidden="true">/</span>
+      <span>{{ entry.app_label }}</span>
+    </nav>
+    <h1>{{ entry.plural }}</h1>
+    <p class="page-meta"><span class="mono">{{ total }}</span> {{ "record" if total == 1 else "records" }}{% if search %} matching “{{ search }}”{% endif %}</p>
+  </div>
+  <div class="head-actions">
+    <a class="button primary" href="{{ entry.url }}/add"
+       hx-get="{{ entry.url }}/add" hx-target="#modal-content" hx-swap="innerHTML"
+       hx-push-url="false" data-modal-open>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <path d="M12 5v14"/><path d="M5 12h14"/>
+      </svg>
+      Add {{ entry.model.__name__|lower }}
+    </a>
+  </div>
 </div>
-<form class="toolbar" method="get" action="{{ entry.url }}">
-  <input type="search" name="search" value="{{ search }}" placeholder="{% if searchable %}Search {{ entry.plural|lower }}…{% else %}No text fields to search{% endif %}"
-         {% if not searchable %}disabled{% endif %}
-         hx-get="{{ entry.url }}" hx-trigger="input changed delay:300ms, search" hx-include="closest form"
-         hx-target="#results" hx-select="#results" hx-swap="outerHTML" hx-push-url="true">
-  {% for name, value in keep %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-</form>
-<div class="with-filters">
-  <div id="results" class="results">
-    <form method="post" action="{{ entry.url }}/bulk-delete">
-      <table>
-        <thead>
-          <tr>
-            <th class="check"></th>
-            {% for column in columns %}<th><a href="{{ column.sort_url }}">{{ column.label }}{{ column.arrow }}</a></th>{% endfor %}
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
-            <tr>
-              <td class="check"><input type="checkbox" name="ids" value="{{ row.pk }}" aria-label="Select row {{ row.pk }}"></td>
-              {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
-              <td class="actions"><a href="{{ entry.url }}/{{ row.pk }}">Edit</a></td>
-            </tr>
-          {% else %}
-            <tr><td class="empty" colspan="{{ columns|length + 2 }}">No {{ entry.plural|lower }} found.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <div class="footer">
-        <button type="submit" class="button danger small">Delete selected</button>
-        <span class="muted">{{ total }} {{ entry.plural|lower }}</span>
-        <nav class="pages">
-          {% if page > 1 %}<a href="{{ url(page=page - 1) }}">‹ Prev</a>{% endif %}
-          <span>Page {{ page }} of {{ pages }}</span>
-          {% if page < pages %}<a href="{{ url(page=page + 1) }}">Next ›</a>{% endif %}
-        </nav>
-      </div>
+
+<div class="list-controls">
+  <div class="list-topline">
+    <form class="search-form" method="get" action="{{ entry.url }}" role="search">
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <span class="sr-only">Search {{ entry.plural|lower }}</span>
+        <input type="search" name="search" value="{{ search }}"
+               placeholder="{% if searchable %}Search {{ entry.plural|lower }}…{% else %}No text fields to search{% endif %}"
+               {% if not searchable %}disabled{% endif %}
+               hx-get="{{ entry.url }}" hx-trigger="input changed delay:300ms, search" hx-include="closest form"
+               hx-target="#main" hx-select="#main" hx-swap="innerHTML" hx-push-url="true" hx-sync="this:replace">
+      </label>
+      {% for name, value in keep %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     </form>
   </div>
-  {% if filters %}
-    <aside class="filters">
-      <h3>Filter</h3>
-      {% for name, choices in filters %}
-        <div class="filter">
-          <div class="muted">{{ name|replace("_", " ")|capitalize }}</div>
-          <a class="{% if name not in active %}on{% endif %}" href="{{ url(**{name: None, 'page': 1}) }}">Any</a>
-          {% for value, text in choices %}
-            <a class="{% if active.get(name) == value %}on{% endif %}" href="{{ url(**{name: value, 'page': 1}) }}">{{ text }}</a>
+
+  {% if filters or search or active %}
+    <div class="list-actions">
+      {% if filters %}
+        <div class="filter-panel" role="group" aria-label="Filters">
+          {% for name, choices in filters %}
+            {% set filter_label = name|replace("_", " ")|capitalize %}
+            {% set selected = active.get(name) %}
+            {% set ns = namespace(label="") %}
+            {% for value, text in choices %}
+              {% if selected == value %}{% set ns.label = text %}{% endif %}
+            {% endfor %}
+            <details class="filter-menu{% if selected %} is-active{% endif %}" data-filter="{{ name }}">
+              <summary class="filter-toggle">
+                <span class="filter-toggle-label">{{ filter_label }}</span>
+                {% if selected %}<span class="filter-toggle-value">{{ ns.label }}</span>{% endif %}
+                <svg class="filter-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6"/>
+                </svg>
+              </summary>
+              <div class="filter-menu-panel" role="group" aria-label="{{ filter_label }} filter">
+                <p class="filter-menu-head">{{ filter_label }}</p>
+                <a class="filter-option{% if not selected %} is-selected{% endif %}"
+                   href="{{ url(**{name: None, 'page': 1}) }}"{% if not selected %} aria-current="true"{% endif %}>
+                  <span>Any</span>
+                  {% if not selected %}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m5 12 4 4L19 6"/>
+                    </svg>
+                  {% endif %}
+                </a>
+                {% for value, text in choices %}
+                  <a class="filter-option{% if selected == value %} is-selected{% endif %}"
+                     href="{{ url(**{name: value, 'page': 1}) }}"{% if selected == value %} aria-current="true"{% endif %}>
+                    <span>{{ text }}</span>
+                    {% if selected == value %}
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m5 12 4 4L19 6"/>
+                      </svg>
+                    {% endif %}
+                  </a>
+                {% endfor %}
+              </div>
+            </details>
           {% endfor %}
         </div>
-      {% endfor %}
-    </aside>
+      {% endif %}
+      {% if search or active %}
+        <a class="clear-link" href="{{ entry.url }}">Clear all</a>
+      {% endif %}
+    </div>
   {% endif %}
+</div>
+
+<p id="result-status" class="sr-only" role="status"></p>
+<div id="results" class="results">
+  <form method="post" action="{{ entry.url }}/bulk-delete">
+    <div class="table-panel">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="{{ entry.plural }} table">
+        <table>
+          <thead>
+            <tr>
+              <th class="check">
+                <label class="check-hit">
+                  <input type="checkbox" data-select-all aria-label="Select all {{ entry.plural|lower }} on this page">
+                </label>
+              </th>
+              {% for column in columns %}
+                <th scope="col" class="col-{{ column.kind }}"{% if '↑' in column.arrow %} aria-sort="ascending"{% elif '↓' in column.arrow %} aria-sort="descending"{% endif %}>
+                  <a href="{{ column.sort_url }}">{{ column.label }}<span class="sort-arrow" aria-hidden="true">{{ column.arrow }}</span></a>
+                </th>
+              {% endfor %}
+              <th class="actions"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td class="check"><label class="check-hit"><input type="checkbox" name="ids" value="{{ row.pk }}" aria-label="Select {{ entry.model.__name__ }} {{ row.pk }}"></label></td>
+                {% for cell in row.cells %}
+                  <td class="cell cell-{{ cell.kind }}" data-label="{{ columns[loop.index0].label }}">
+                    <span class="cell-value">
+                    {% if cell.kind == 'bool' %}
+                      <span class="badge {{ 'badge-yes' if cell.text == 'yes' else 'badge-no' }}">{{ "Yes" if cell.text == "yes" else "No" }}</span>
+                    {% elif cell.kind == 'enum' %}
+                      <span class="badge badge-neutral">{{ cell.text }}</span>
+                    {% else %}
+                      {{ cell.text }}
+                    {% endif %}
+                    </span>
+                  </td>
+                {% endfor %}
+                <td class="actions">
+                  <a class="row-action" href="{{ entry.url }}/{{ row.pk }}"
+                     hx-get="{{ entry.url }}/{{ row.pk }}" hx-target="#modal-content" hx-swap="innerHTML"
+                     hx-push-url="false" data-modal-open aria-label="Edit {{ entry.model.__name__ }} {{ row.pk }}">
+                    <span>Edit</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M9 18l6-6-6-6"/>
+                    </svg>
+                  </a>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td class="empty" colspan="{{ columns|length + 2 }}">
+                  <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>
+                    </svg>
+                    {% if search or active %}
+                      <h2>No matches</h2>
+                      <p>Try a different search, or clear the filters to see everything.</p>
+                      <a class="button" href="{{ entry.url }}">Clear search and filters</a>
+                    {% else %}
+                      <h2>No {{ entry.plural|lower }} yet</h2>
+                      <p>Add the first one and it will show up here.</p>
+                      <a class="button primary" href="{{ entry.url }}/add"
+                         hx-get="{{ entry.url }}/add" hx-target="#modal-content" hx-swap="innerHTML"
+                         hx-push-url="false" data-modal-open>Add {{ entry.model.__name__|lower }}</a>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="table-footer">
+        <button type="submit" class="button danger small" data-bulk-delete
+                {% if not rows %}disabled{% endif %}
+                hx-post="{{ entry.url }}/bulk-delete" hx-target="#modal-content"
+                hx-swap="innerHTML" hx-include="closest form" data-modal-open>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/>
+          </svg>
+          Delete selected
+        </button>
+        <span class="selection-count" data-selection-count aria-live="polite">Select rows</span>
+        <span class="result-count">{{ total }} {{ "row" if total == 1 else "rows" }}</span>
+        <nav class="pager" aria-label="Pagination">
+          {% if page > 1 %}<a href="{{ url(page=page - 1) }}" rel="prev"><span aria-hidden="true">‹</span> Prev</a>{% endif %}
+          <span class="current" aria-current="page">Page {{ page }} of {{ pages }}</span>
+          {% if page < pages %}<a href="{{ url(page=page + 1) }}" rel="next">Next <span aria-hidden="true">›</span></a>{% endif %}
+        </nav>
+      </div>
+    </div>
+  </form>
 </div>
 {% endblock %}

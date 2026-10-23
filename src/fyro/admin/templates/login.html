@@ -1,12 +1,49 @@
 {% extends "base.html" %}
 {% block title %}Log in · fyro admin{% endblock %}
 {% block bare %}
-<form class="card" method="post" action="/admin/login">
-  <h1>fyro admin</h1>
-  {% if error %}<p class="alert">{{ error }}</p>{% endif %}
-  <label>Username <input name="username" value="{{ username or '' }}" autocomplete="username" required autofocus></label>
-  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-  <input type="hidden" name="next" value="{{ next }}">
-  <button type="submit" class="button primary">Log in</button>
-</form>
+<div class="auth-shell">
+  <section class="auth-art">
+    <div class="brand" aria-hidden="true">
+      <span class="brand-mark">ƒ</span>
+      <span class="brand-name">fyro</span>
+      <span class="brand-context">admin</span>
+    </div>
+    <div class="auth-statement">
+      <p class="auth-kicker">Fast, yet ridiculously opinionated</p>
+      <p class="auth-headline">Your data, with a front door.</p>
+    </div>
+  </section>
+  <div class="auth-card-wrap">
+    <div class="card">
+      <a class="brand" href="/admin" aria-label="fyro admin home">
+        <span class="brand-mark" aria-hidden="true">ƒ</span>
+        <span class="brand-name">fyro</span>
+        <span class="brand-context">admin</span>
+      </a>
+      <div>
+        <h1>Log in</h1>
+        <p class="card-sub">Superusers only.</p>
+      </div>
+      {% if error %}
+        <p class="alert" role="alert">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/>
+          </svg>
+          {{ error }}
+        </p>
+      {% endif %}
+      <form method="post" action="/admin/login">
+        <label for="username">Username
+          <input id="username" name="username" value="{{ username or '' }}" autocomplete="username" required autofocus>
+        </label>
+        <label for="password">Password
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <input type="hidden" name="next" value="{{ next }}">
+        <button type="submit" class="button primary">Log in</button>
+      </form>
+      <p class="auth-foot">fyro admin · superuser access</p>
+    </div>
+  </div>
+</div>
 {% endblock %}

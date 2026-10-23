@@ -1,12 +1,60 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="head"><h1>Dashboard</h1></div>
-{% for app_label, items in nav.items() %}
-  <section class="panel">
-    <h2>{{ app_label }}</h2>
-    {% for item in items %}
-      <a class="row-link" href="{{ item.url }}"><span>{{ item.plural }}</span><span class="muted">{{ counts[item.url] }}</span></a>
+{% set ns = namespace(models=0) %}
+{% for _, items in nav.items() %}{% set ns.models = ns.models + items|length %}{% endfor %}
+<div class="page-head">
+  <div>
+    <p class="crumbs">Overview</p>
+    <h1>Everything in your project</h1>
+    <p class="page-meta">Every model registered in <span class="mono">installed_apps</span>, in one place.</p>
+  </div>
+</div>
+{% if nav %}
+  <div class="stat-strip">
+    <div class="stat">
+      <span class="stat-label">Apps</span>
+      <span class="stat-value">{{ nav|length }}</span>
+      <span class="stat-note">installed</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Models</span>
+      <span class="stat-value">{{ ns.models }}</span>
+      <span class="stat-note">with an admin page</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Records</span>
+      <span class="stat-value">{{ counts.values()|sum }}</span>
+      <span class="stat-note">across every table</span>
+    </div>
+  </div>
+  <div class="apps">
+    {% for app_label, items in nav.items() %}
+      <section class="app-panel">
+        <header class="app-head">
+          <h2>{{ app_label }}</h2>
+          <span class="app-total">{{ items|length }} {{ "model" if items|length == 1 else "models" }}</span>
+        </header>
+        {% for item in items %}
+          <a class="model-row" href="{{ item.url }}">
+            <span class="model-name">{{ item.plural }}</span>
+            <span class="model-count">{{ counts[item.url] }} <span class="model-unit">{{ "record" if counts[item.url] == 1 else "records" }}</span></span>
+            <svg class="model-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M7 17L17 7"/><path d="M8 7h9v9"/>
+            </svg>
+          </a>
+        {% endfor %}
+      </section>
     {% endfor %}
-  </section>
-{% endfor %}
+  </div>
+{% else %}
+  <div class="table-panel">
+    <div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>
+      </svg>
+      <h2>No models yet</h2>
+      <p>Add an app with a model to <span class="mono">installed_apps</span> and it will appear here with its own admin page.</p>
+    </div>
+  </div>
+{% endif %}
 {% endblock %}

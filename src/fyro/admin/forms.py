@@ -27,7 +27,8 @@ class FormField:
 
 
 def label(name: str) -> str:
-    return name.replace("_", " ").capitalize()
+    special = {"id": "ID", "sku": "SKU", "url": "URL", "uuid": "UUID", "api": "API"}
+    return special.get(name, name.replace("_", " ").capitalize())
 
 
 def widget_for(tp: Any, info: Any) -> str:
@@ -129,7 +130,12 @@ def parse(
     try:
         validated = schema.model_validate(raw)
     except ValidationError as error:
-        return {}, {str(e["loc"][0]) if e["loc"] else "__all__": e["msg"] for e in error.errors()}
+        return {}, {
+            str(e["loc"][0]) if e["loc"] else "__all__": (
+                "This field is required." if e["msg"] == "Field required" else e["msg"]
+            )
+            for e in error.errors()
+        }
     values = validated.model_dump(exclude_unset=True)
     for name, value in values.items():
         if isinstance(value, datetime) and value.tzinfo is None:
