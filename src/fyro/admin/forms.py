@@ -17,8 +17,10 @@ class FormField:
     name: str
     label: str
     # text | textarea | checkbox | number | date | datetime-local | select | password | link
+    # | links (ManyToMany: a multi-select, its picks in `values`)
     widget: str
     value: str = ""
+    values: list[str] = field(default_factory=list)
     checked: bool = False
     options: list[tuple[str, str]] = field(default_factory=list)
     required: bool = False
@@ -33,8 +35,10 @@ def label(name: str) -> str:
 
 
 def field_label(model: Any, name: str) -> str:
-    """A field's label; a ForeignKey's id field is labelled by the link (author_id: Author)."""
+    """A field's label; a link's id field is labelled by the link (author_id: Author,
+    tag_ids: Tags)."""
     links = {id_field: link for link, id_field in model.__fyro_links__.items()}
+    links |= {ids: name for name, ids in model.__fyro_many__.items()}
     return label(links.get(name, name))
 
 
@@ -127,6 +131,17 @@ def build_fields(
                     readonly=True,
                 )
             )
+    for ids in model.__fyro_many__.values():
+        if ids in schema.model_fields:
+            current = getattr(instance, ids) if instance is not None else []
+            fields.append(
+                FormField(
+                    name=ids,
+                    label=field_label(model, ids),
+                    widget="links",
+                    values=[as_input(v) for v in current],
+                )
+            )
     return fields
 
 
@@ -135,7 +150,12 @@ def parse(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Validate submitted form data with `schema`. Returns (values, errors by field)."""
     raw: dict[str, Any] = {}
+    many = set(model.__fyro_many__.values())
     for name, schema_field in schema.model_fields.items():
+        if name in many:
+            # Nothing selected sends nothing: an empty set, which clears it when editing.
+            raw[name] = [v for v in form.get(name, []) if v]
+            continue
         info = model.__fyro_fields__[name]
         tp, nullable = _unwrap_optional(schema_field.annotation)
         if tp is bool:

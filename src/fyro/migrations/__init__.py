@@ -180,7 +180,9 @@ def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
     for table_ops in upgrade_ops.ops:
         if not isinstance(table_ops, ops.ModifyTableOps):
             continue
-        model = models[table_ops.table_name]
+        model = models.get(table_ops.table_name)
+        if model is None:  # a ManyToMany join table: fyro's own, never filled
+            continue
         added = {op.column.name for op in table_ops.ops if isinstance(op, ops.AddColumnOp)}
         rewritten: list[Any] = []
         for op in table_ops.ops:

@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 from support import MigratedSchema
 
 import fyro.db
-from fyro import Field, ForeignKey, Model, apps
+from fyro import Field, ForeignKey, ManyToMany, Model, apps
 from fyro.apps import Registry
 from fyro.conf import get_settings
 from fyro.db import engine as db_engine
@@ -50,6 +50,7 @@ async def m(tmp_path_factory):
             title: str = Field(max_length=200)
             author: Author = ForeignKey(on_delete="cascade")
             editor: Author | None = ForeignKey(on_delete="set_null", default=None)
+            tags: list[Tag] = ManyToMany()
 
         schema = MigratedSchema(tmp_path_factory.mktemp("schema"), DATABASE_URL)
         await schema.create()
@@ -67,7 +68,9 @@ async def m(tmp_path_factory):
 @pytest_asyncio.fixture(autouse=True, loop_scope="module")
 async def clean_tables(m):
     async with fyro.db.get_engine().begin() as conn:
-        await conn.execute(text("TRUNCATE blog_post, blog_author, blog_tag RESTART IDENTITY"))
+        await conn.execute(
+            text("TRUNCATE blog_post_tags, blog_post, blog_author, blog_tag RESTART IDENTITY")
+        )
 
 
 @contextmanager
@@ -181,3 +184,87 @@ async def test_unloaded_link_is_clear_error(m):
     ):
         _ = post.author
     assert post.author_id == ana.id
+
+
+# --- ManyToMany (phase 16) -------------------------------------------------
+
+
+async def tags(m, *names):
+    return [await m.Tag.objects.create(name=n) for n in names]
+
+
+async def test_create_with_tags_and_prefetch(m):
+    async with fyro.db.session():
+        ana = await m.Author.objects.create(name="ana")
+        news, tech, misc = await tags(m, "news", "tech", "misc")
+        first = await m.Post.objects.create(title="a", author=ana, tags=[news, tech])
+        await m.Post.objects.create(title="b", author=ana, tag_ids=[misc.id, misc.id])
+        posts = await m.Post.objects.prefetch_related("tags").order_by("title").all()
+    assert [sorted(t.name for t in p.tags) for p in posts] == [["news", "tech"], ["misc"]]
+    assert sorted(posts[0].tag_ids) == [news.id, tech.id]
+    assert first.id == posts[0].id
+
+
+async def test_update_replaces_the_set(m):
+    async with fyro.db.session():
+        ana = await m.Author.objects.create(name="ana")
+        news, tech, misc = await tags(m, "news", "tech", "misc")
+        await m.Post.objects.create(title="a", author=ana, tags=[news])
+        await m.Post.objects.create(title="b", author=ana, tags=[news])
+        # the filter matches on the old title: rows are picked before anything changes
+        changed = await m.Post.objects.filter(title="a").update(title="z", tags=[tech, misc])
+        assert changed == 1
+        assert await m.Post.objects.filter(title="b").update(tag_ids=[]) == 1
+        posts = await m.Post.objects.prefetch_related("tags").order_by("title").all()
+    assert [(p.title, sorted(t.name for t in p.tags)) for p in posts] == [
+        ("b", []),
+        ("z", ["misc", "tech"]),
+    ]
+
+
+async def test_filter_and_exclude_by_tag(m):
+    async with fyro.db.session():
+        ana = await m.Author.objects.create(name="ana")
+        news, tech = await tags(m, "news", "tech")
+        await m.Post.objects.create(title="a", author=ana, tags=[news, tech])
+        await m.Post.objects.create(title="b", author=ana, tags=[tech])
+        await m.Post.objects.create(title="c", author=ana)
+        assert [p.title for p in await m.Post.objects.filter(tags=news).all()] == ["a"]
+        assert [
+            p.title for p in await m.Post.objects.filter(tags=tech.id).order_by("title").all()
+        ] == ["a", "b"]
+        assert [
+            p.title for p in await m.Post.objects.exclude(tags=news).order_by("title").all()
+        ] == ["b", "c"]
+        with pytest.raises(TypeError, match=r"Post\.tags: expected Tag, got Author"):
+            m.Post.objects.filter(tags=ana)
+
+
+async def test_unloaded_tags_are_clear_error(m):
+    async with fyro.db.session():
+        ana = await m.Author.objects.create(name="ana")
+        post = await m.Post.objects.create(title="a", author=ana)
+    hint = r"Post\.tags is not loaded\. Use Post\.objects\.prefetch_related\('tags'\)"
+    with pytest.raises(fyro.db.NotLoaded, match=hint):
+        _ = post.tags
+    with pytest.raises(fyro.db.NotLoaded, match=hint):
+        _ = post.tag_ids
+
+
+async def test_prefetch_related_unknown_name_is_error(m):
+    with pytest.raises(
+        TypeError, match=r"Post\.author: not a ManyToMany\. ManyToMany fields: tags"
+    ):
+        m.Post.objects.prefetch_related("author")
+
+
+async def test_prefetch_is_one_extra_query(m):
+    async with fyro.db.session():
+        ana = await m.Author.objects.create(name="ana")
+        news, tech = await tags(m, "news", "tech")
+        for i in range(50):
+            await m.Post.objects.create(title=f"p{i}", author=ana, tags=[news, tech])
+        with count_queries() as statements:
+            posts = await m.Post.objects.prefetch_related("tags").select_related("author").all()
+            assert all(len(p.tags) == 2 and p.author.name == "ana" for p in posts)
+    assert len(statements) == 2

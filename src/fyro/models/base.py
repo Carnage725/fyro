@@ -14,7 +14,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from fyro import apps, db
 from fyro.conf import ImproperlyConfigured
-from fyro.models.fields import MISSING, FieldInfo, ForeignKeyInfo
+from fyro.models.fields import MISSING, FieldInfo, ForeignKeyInfo, ManyToManyInfo
 from fyro.models.manager import Manager, QuerySet
 from fyro.models.schemas import build_schemas
 
@@ -150,16 +150,66 @@ def _foreign_key(where: str, target: Any, nullable: bool, info: FieldInfo) -> sa
 
 
 def _link_getattribute(self: Any, name: str) -> Any:
-    """`__getattribute__` for models with ForeignKeys: an unloaded link names the fix."""
+    """`__getattribute__` for models with links: an unloaded link names the fix."""
     try:
         return object.__getattribute__(self, name)
     except InvalidRequestError as error:  # lazy="raise"
-        if name not in type(self).__fyro_links__:
+        cls = type(self)
+        if name in cls.__fyro_links__:
+            loader = "select_related"
+        elif name in cls.__fyro_many__:
+            loader = "prefetch_related"
+        else:
             raise
-        model = type(self).__name__
         raise db.NotLoaded(
-            f"{model}.{name} is not loaded. Use {model}.objects.select_related({name!r})."
+            f"{cls.__name__}.{name} is not loaded. Use {cls.__name__}.objects.{loader}({name!r})."
         ) from error
+
+
+def _ids_name(name: str) -> str:
+    """`tags` -> `tag_ids`, `categories` -> `category_ids`, `staff` -> `staff_ids`."""
+    if name.endswith("ies"):
+        return f"{name[:-3]}y_ids"
+    return f"{name.removesuffix('s')}_ids"
+
+
+def _many_target(where: str, tp: Any, info: FieldInfo) -> Any:
+    """The target of `name: list[Target] = ManyToMany()`, or None for any other field."""
+    args = get_args(tp) if get_origin(tp) is list else ()
+    target = args[0] if len(args) == 1 else None
+    is_model = isinstance(target, type) and issubclass(target, Model)
+    if isinstance(info, ManyToManyInfo) and not is_model:
+        raise TypeError(f"{where}: ManyToMany needs a list[Model] type, got {tp!r}.")
+    if is_model and not isinstance(info, ManyToManyInfo):
+        raise TypeError(f"{where}: a link to many {target.__name__} rows needs `= ManyToMany()`.")
+    if is_model and len(target.__table__.primary_key.columns) != 1:
+        raise TypeError(
+            f"{where}: {target.__name__} has a composite primary key; it cannot be linked."
+        )
+    return target if is_model else None
+
+
+def _join_table(table: str, pk: str, pk_type: Any, model: str, name: str, target: Any) -> sa.Table:
+    """`<table>_<name>` with `<model>_id` and `<target>_id`, both the primary key and both
+    ON DELETE CASCADE: deleting either side removes the link, never the other row."""
+    target_pk = next(iter(target.__table__.primary_key.columns))
+    return sa.Table(
+        f"{table}_{name}",
+        Model.metadata,
+        sa.Column(
+            f"{_snake(model)}_id",
+            pk_type,
+            sa.ForeignKey(f"{table}.{pk}", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column(
+            f"{_snake(target.__name__)}_id",
+            target_pk.type,
+            sa.ForeignKey(target_pk, ondelete="CASCADE"),
+            primary_key=True,
+            index=True,  # the primary key index covers lookups by the first column only
+        ),
+    )
 
 
 def _read_meta(cls: type) -> dict[str, Any]:
@@ -244,6 +294,7 @@ class Model(DeclarativeBase):
     __fyro_list_display__: ClassVar[tuple[str, ...]]
     __fyro_search_fields__: ClassVar[tuple[str, ...]]
     __fyro_links__: ClassVar[dict[str, str]]  # ForeignKey name -> its id field
+    __fyro_many__: ClassVar[dict[str, str]]  # ManyToMany name -> its ids field
     objects: ClassVar[QuerySet] = Manager()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kw: Any) -> None:
@@ -260,6 +311,7 @@ class Model(DeclarativeBase):
         hints: dict[str, Any] = {}
         columns: dict[str, Any] = {}
         links: dict[str, tuple[Any, Any]] = {}  # name -> (relationship, annotation)
+        many: dict[str, tuple[Any, Any, FieldInfo]] = {}  # name -> (target, annotation, info)
         try:
             annotations = inspect.get_annotations(cls, eval_str=True)
         except NameError as error:
@@ -279,6 +331,10 @@ class Model(DeclarativeBase):
                     f"{where}: read_only and write_only cannot both be set "
                     "(the field would be in no schema). Remove one."
                 )
+            target = _many_target(where, tp, info)
+            if target is not None:
+                many[field_name] = (target, tp, info)
+                continue
             base_tp, nullable = _unwrap_optional(tp)
             link = None
             extra: tuple[Any, ...] = ()
@@ -331,8 +387,30 @@ class Model(DeclarativeBase):
                 **columns,
             }
 
+        table_name = meta.get("table_name") or f"{label}_{_snake(name)}"
+        pks = [n for n, f in fields.items() if f.primary_key]
+        pk = pks[0] if len(pks) == 1 else None  # None: composite, no ManyToMany possible
+        many_fields: dict[str, FieldInfo] = {}
+        many_types: dict[str, Any] = {}
+        for many_name, (target, many_tp, info) in many.items():
+            ids = _ids_name(many_name)
+            if ids in fields or ids in many_fields:
+                raise TypeError(
+                    f"{name}.{ids}: this name is used twice. A ManyToMany named `{many_name}` "
+                    f"adds a field named `{ids}`; rename one of the fields."
+                )
+            if pk is None:
+                raise TypeError(f"{name}: a composite primary key cannot have a ManyToMany.")
+            join = _join_table(table_name, pk, columns[pk].column.type, name, many_name, target)
+            target_pk = next(iter(target.__table__.primary_key.columns))
+            # order_by: `tag_ids` and `tags` come back in a stable order (by id).
+            relation = relationship(target, secondary=join, lazy="raise", order_by=target_pk)
+            links[many_name] = (relation, many_tp)
+            many_fields[ids] = info
+            many_types[ids] = list[target_pk.type.python_type]
+
         for key in EXCLUDE_KEYS:
-            missing = sorted(set(meta.get(key, ())) - set(fields))
+            missing = sorted(set(meta.get(key, ())) - set(fields) - set(many_fields))
             if missing:
                 raise TypeError(
                     f"{name}.Meta.{key}: no field named {missing}. Fields: {', '.join(fields)}."
@@ -352,7 +430,7 @@ class Model(DeclarativeBase):
             **{n: Mapped[tp] for n, tp in hints.items()},
             **{n: Mapped[tp] for n, (_, tp) in links.items()},
         }
-        cls.__tablename__ = meta.get("table_name") or f"{label}_{_snake(name)}"
+        cls.__tablename__ = table_name
 
         super().__init_subclass__(**kw)
 
@@ -362,11 +440,24 @@ class Model(DeclarativeBase):
         cls.__fyro_admin__ = meta.get("admin", True)
         cls.__fyro_list_display__ = list_display
         cls.__fyro_search_fields__ = search_fields
-        cls.__fyro_links__ = {link: f"{link}_id" for link in links}
+        cls.__fyro_links__ = {link: f"{link}_id" for link in links if link not in many}
+        cls.__fyro_many__ = {many_name: _ids_name(many_name) for many_name in many}
+        for many_name, ids in cls.__fyro_many__.items():
+            # `post.tag_ids` for the Read schema, from the prefetched `post.tags`.
+            key = next(iter(many[many_name][0].__table__.primary_key.columns)).key
+            setattr(
+                cls,
+                ids,
+                property(
+                    lambda self, n=many_name, k=key: [getattr(t, k) for t in getattr(self, n)]
+                ),
+            )
         if links:  # only models with links pay for the hook (about 1 us per row read)
             cls.__getattribute__ = _link_getattribute  # type: ignore[method-assign]
         schema_hints = {n: _schema_type(tp, columns[n].column) for n, tp in hints.items()}
-        cls.Create, cls.Read, cls.Update = build_schemas(name, schema_hints, fields, meta)
+        cls.Create, cls.Read, cls.Update = build_schemas(
+            name, {**schema_hints, **many_types}, {**fields, **many_fields}, meta
+        )
         for error in (db.DoesNotExist, db.MultipleObjectsReturned):
             namespace = {"__module__": cls.__module__, "__qualname__": f"{name}.{error.__name__}"}
             setattr(cls, error.__name__, type(error.__name__, (error,), namespace))

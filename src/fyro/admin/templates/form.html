@@ -26,6 +26,15 @@
           <select id="f-{{ f.name }}" name="{{ f.name }}" {% if f.required %}required{% endif %}>
             {% for value, text in f.options %}<option value="{{ value }}" {% if value == f.value %}selected{% endif %}>{{ text }}</option>{% endfor %}
           </select>
+        {% elif f.widget == "links" %}
+          {% if f.search_url %}
+            <input type="search" name="_search" placeholder="Search…" aria-label="Search {{ f.label }}"
+                   hx-get="{{ f.search_url }}" hx-trigger="input changed delay:300ms, search"
+                   hx-include="#f-{{ f.name }}" hx-target="#f-{{ f.name }}" hx-swap="innerHTML">
+          {% endif %}
+          <select id="f-{{ f.name }}" name="{{ f.name }}" multiple size="{{ [[f.options|length, 2]|max, 8]|min }}">
+            {% for value, text in f.options %}<option value="{{ value }}" {% if value in f.values %}selected{% endif %}>{{ text }}</option>{% endfor %}
+          </select>
         {% elif f.widget == "select" %}
           <select id="f-{{ f.name }}" name="{{ f.name }}">
             {% for value, text in f.options %}<option value="{{ value }}" {% if value == f.value %}selected{% endif %}>{{ text }}</option>{% endfor %}

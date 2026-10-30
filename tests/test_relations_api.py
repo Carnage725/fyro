@@ -11,7 +11,7 @@ from sqlalchemy import event, text
 from support import MigratedSchema
 
 import fyro.db
-from fyro import Field, ForeignKey, Model, apps, create_app
+from fyro import Field, ForeignKey, ManyToMany, Model, apps, create_app
 from fyro.apps import Registry
 from fyro.conf import get_settings
 from fyro.db import engine as db_engine
@@ -54,6 +54,13 @@ async def app(tmp_path_factory):
             class Meta:
                 permissions = {"read": "superuser", "write": "superuser"}  # noqa: RUF012
 
+        class Tag(Model):
+            __module__ = "blog.models"
+            name: str = Field(max_length=50)
+
+            class Meta:
+                permissions = PUBLIC
+
         class Post(Model):
             __module__ = "blog.models"
             title: str = Field(max_length=200)
@@ -61,6 +68,7 @@ async def app(tmp_path_factory):
             editor: Author | None = ForeignKey(on_delete="set_null", default=None)
             secret: Secret | None = ForeignKey(on_delete="set_null", default=None)
             owner: User | None = ForeignKey(on_delete="set_null", default=None)
+            tags: list[Tag] = ManyToMany()
 
             class Meta:
                 permissions = PUBLIC
@@ -110,7 +118,7 @@ async def client(app):
     async with fyro.db.get_engine().begin() as conn:
         await conn.execute(
             text(
-                "TRUNCATE auth_user, auth_session, blog_author, blog_secret, blog_post, "
+                "TRUNCATE auth_user, auth_session, blog_author, blog_secret, blog_tag, blog_post_tags, blog_post, "
                 "blog_review, blog_profile, blog_card RESTART IDENTITY"
             )
         )
@@ -170,6 +178,7 @@ async def test_create_and_read_use_id_fields(client):
         "editor_id": None,
         "secret_id": None,
         "owner_id": None,
+        "tag_ids": [],
     }
     assert set((await client.get("/api/blog/post/1")).json()) == set(body)
 
@@ -222,7 +231,7 @@ async def test_expand_unknown_is_422(client):
     response = await client.get("/api/blog/post", params={"expand": "title"})
     assert response.status_code == 422
     assert response.json()["detail"] == (
-        "Unknown expand field 'title'. Use one of: author, editor, secret."
+        "Unknown expand field 'title'. Use one of: author, editor, secret, tags."
     )
 
 
@@ -247,7 +256,7 @@ async def test_expand_checks_target_read_permission(client):
     assert response.json()["items"][0]["secret"] is None
 
 
-async def test_expanded_list_is_one_select(client):
+async def test_expanded_list_is_a_fixed_number_of_selects(client):
     ana = await author(client)
     async with fyro.db.session():
         Post = apps.registry.apps["blog"].models["post"]
@@ -257,7 +266,7 @@ async def test_expanded_list_is_one_select(client):
     with count_selects() as selects:
         response = await client.get("/api/blog/post", params=params)
     assert len(response.json()["items"]) == 50
-    assert len(selects) == 1
+    assert len(selects) == 2  # rows with both authors joined, then every post's tag_ids
 
 
 # --- delete ----------------------------------------------------------------
@@ -306,3 +315,72 @@ async def test_replaced_read_schema_shapes_responses_and_expand(client):
     await client.post("/api/blog/card", json={"profile_id": 1})
     card = (await client.get("/api/blog/card/1", params={"expand": "profile"})).json()
     assert card["profile"] == {"id": 1, "name": "ana"}
+
+
+# --- ManyToMany (phase 16) -------------------------------------------------
+
+
+async def tag(client, name):
+    response = await client.post("/api/blog/tag", json={"name": name})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+async def test_tag_ids_read_and_write(client):
+    ana = await author(client)
+    news, tech, misc = [await tag(client, n) for n in ("news", "tech", "misc")]
+    body = {"title": "t", "author_id": ana, "tag_ids": [tech, news, tech]}
+    created = await client.post("/api/blog/post", json=body)
+    assert created.status_code == 201, created.text
+    assert created.json()["tag_ids"] == [news, tech]
+    patched = await client.patch("/api/blog/post/1", json={"tag_ids": [misc]})
+    assert patched.json()["tag_ids"] == [misc]
+    untouched = await client.patch("/api/blog/post/1", json={"title": "u"})
+    assert untouched.json()["tag_ids"] == [misc]
+    assert (await client.get("/api/blog/post")).json()["items"][0]["tag_ids"] == [misc]
+
+
+async def test_missing_tag_is_422_naming_field(client):
+    ana = await author(client)
+    news = await tag(client, "news")
+    body = {"title": "t", "author_id": ana, "tag_ids": [news, 99]}
+    response = await client.post("/api/blog/post", json=body)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "tag_ids: no Tag with id 99."
+
+
+async def test_expand_tags(client):
+    ana = await author(client)
+    news, tech = await tag(client, "news"), await tag(client, "tech")
+    await client.post(
+        "/api/blog/post", json={"title": "t", "author_id": ana, "tag_ids": [news, tech]}
+    )
+    await client.post("/api/blog/post", json={"title": "u", "author_id": ana})
+    items = (await client.get("/api/blog/post", params={"expand": "tags"})).json()["items"]
+    assert [p["tags"] for p in items] == [
+        [{"id": news, "name": "news"}, {"id": tech, "name": "tech"}],
+        [],
+    ]
+    assert "tags" not in (await client.get("/api/blog/post/1")).json()
+
+
+async def test_list_with_tags_is_two_selects(client):
+    ana = await author(client)
+    news = await tag(client, "news")
+    async with fyro.db.session():
+        Post = apps.registry.apps["blog"].models["post"]
+        for i in range(30):
+            await Post.objects.create(title=f"p{i}", author_id=ana, tag_ids=[news])
+    for params in ({}, {"expand": "author,tags"}):
+        with count_selects() as selects:
+            response = await client.get("/api/blog/post", params={**params, "with_total": "false"})
+        assert len(response.json()["items"]) == 30
+        assert len(selects) == 2, params
+
+
+async def test_openapi_shows_tags(client):
+    spec = (await client.get("/openapi.json")).json()
+    schemas = spec["components"]["schemas"]
+    assert schemas["PostRead"]["properties"]["tag_ids"]["type"] == "array"
+    tags = schemas["PostReadExpanded"]["properties"]["tags"]
+    assert tags["items"]["$ref"].endswith("/TagRead")

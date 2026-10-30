@@ -84,3 +84,16 @@ def ForeignKey(
         constraints={"description": description} if description is not None else {},
         on_delete=on_delete,
     )
+
+
+@dataclass(frozen=True)
+class ManyToManyInfo(FieldInfo):
+    pass
+
+
+def ManyToMany(*, description: str | None = None) -> Any:
+    """Link to many rows: `tags: list[Tag] = ManyToMany()` adds a join table and `tag_ids`."""
+    return ManyToManyInfo(
+        default_factory=list,
+        constraints={"description": description} if description is not None else {},
+    )

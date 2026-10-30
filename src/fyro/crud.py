@@ -1,3 +1,4 @@
+import re
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
@@ -51,6 +52,15 @@ def missing_target(model: Any, error: IntegrityError, values: dict[str, Any]) ->
                     column.key,
                     f"{column.key}: no {target.__name__} with id {values.get(column.key)!r}.",
                 )
+        for name, ids in model.__fyro_many__.items():
+            relation = model.__mapper__.relationships[name]
+            for constraint in relation.secondary.foreign_key_constraints:
+                if constraint.name == _violated(error):
+                    # Postgres names the id: 'Key (tag_id)=(99) is not present in table ...'
+                    detail = getattr(error.orig.__cause__, "detail", None) or ""
+                    found = re.search(r"\)=\((.*?)\)", detail)
+                    which = found.group(1) if found else values.get(ids)
+                    return ids, f"{ids}: no {relation.mapper.class_.__name__} with id {which}."
     raise error
 
 
@@ -171,11 +181,14 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
     )
     # ?expand= links: the id field is readable. A target hidden from the API (Meta.api =
     # False, like fyro.auth's User) is never expanded: its Read schema was not made public.
+    many = model.__fyro_many__
+    # ManyToManys whose ids are readable: loaded for every read, one extra query per page.
+    always = tuple(name for name, ids in many.items() if ids in Read.model_fields)
     links = {
         link: model.__mapper__.relationships[link].mapper.class_
         for link, id_field in model.__fyro_links__.items()
         if id_field in Read.model_fields
-    }
+    } | {name: model.__mapper__.relationships[name].mapper.class_ for name in always}
     expandable = {link: target for link, target in links.items() if target.__fyro_api__}
     # Expanded links are absent unless asked for: unset fields, dropped by exclude_unset.
     Out = (
@@ -184,7 +197,9 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
             __base__=Read,
             **{
                 link: (
-                    target.Read | None
+                    list[target.Read]
+                    if link in many
+                    else target.Read | None
                     if model.__table__.c[model.__fyro_links__[link]].nullable
                     else target.Read,
                     None,
@@ -224,18 +239,23 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
             await can_expand[link](request)
         return names
 
+    def loaded(qs: Any, expand: tuple[str, ...] = ()) -> Any:
+        """`qs` with expanded ForeignKeys joined and readable ManyToManys prefetched."""
+        return qs.select_related(*(n for n in expand if n not in many)).prefetch_related(*always)
+
     def read(obj: Any, expand: tuple[str, ...] = ()) -> Any:
         item = Read.model_validate(obj, from_attributes=True)
         if Out is Read:
             return item
-        expanded = {}
+        expanded: dict[str, Any] = {}
         for link in expand:
-            target = getattr(obj, link)
-            expanded[link] = (
-                None
-                if target is None
-                else expandable[link].Read.model_validate(target, from_attributes=True)
-            )
+            target, schema = getattr(obj, link), expandable[link].Read
+            if link in many:
+                expanded[link] = [schema.model_validate(t, from_attributes=True) for t in target]
+            else:
+                expanded[link] = (
+                    None if target is None else schema.model_validate(target, from_attributes=True)
+                )
         return Out.model_construct(**dict(item), **expanded)
 
     async def list_(
@@ -253,7 +273,7 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
             qs = list_query(model, filters.model_dump(exclude_none=True), search, order_by)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
-        rows = await qs.select_related(*names).limit(limit).offset(offset).all()
+        rows = await loaded(qs, names).limit(limit).offset(offset).all()
         # with_total=false skips the count query, which reads every matching row.
         total = await qs.count() if with_total else None
         items = [read(row, names) for row in rows]
@@ -261,14 +281,16 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
 
     async def get(request: Request, pk_value: PkParam, expand: str | None = None) -> Any:
         names = await parse_expand(request, expand)
-        return read(await model.objects.select_related(*names).get(**{pk: pk_value}), names)
+        return read(await loaded(model.objects, names).get(**{pk: pk_value}), names)
 
     async def create(data: Create) -> Any:
         values = data.model_dump()
         try:
-            return read(await model.objects.create(**values))
+            row = await model.objects.create(**values)
         except IntegrityError as error:
             raise _conflict(model, error, values) from error
+        # Reloaded when ManyToManys must be read: create() returns the row without them.
+        return read(await loaded(model.objects).get(**{pk: getattr(row, pk)}) if always else row)
 
     async def update(pk_value: PkParam, data: Update) -> Any:
         values = data.model_dump(exclude_unset=True)
@@ -277,7 +299,7 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
                 await model.objects.filter(**{pk: pk_value}).update(**values)
             except IntegrityError as error:
                 raise _conflict(model, error, values) from error
-        return read(await model.objects.get(**{pk: pk_value}))
+        return read(await loaded(model.objects).get(**{pk: pk_value}))
 
     async def delete(pk_value: PkParam) -> Response:
         try:

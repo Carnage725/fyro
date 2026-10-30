@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import delete, false, func, insert, or_, select, update
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from fyro.db import engine
 
@@ -27,37 +27,68 @@ class QuerySet:
             )
         return getattr(self.model, name)
 
-    def _resolve(self, values: dict[str, Any]) -> dict[str, Any]:
-        """`author=user` becomes `author_id=user.id`; other names pass through."""
-        links = self.model.__fyro_links__
-        resolved = {}
+    def _target_id(self, name: str, value: Any) -> Any:
+        """An instance of the link's target becomes its primary key; an id passes through."""
+        if not hasattr(value, "__table__"):
+            return value
+        target = self.model.__mapper__.relationships[name].mapper.class_
+        if not isinstance(value, target):
+            raise TypeError(
+                f"{self.model.__name__}.{name}: expected {target.__name__}, "
+                f"got {type(value).__name__}."
+            )
+        return getattr(value, next(iter(target.__table__.primary_key.columns)).key)
+
+    def _resolve(self, values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[Any]]]:
+        """`author=user` becomes `author_id=user.id`. ManyToMany values (`tags=[...]` or
+        `tag_ids=[...]`) are split off as {"tags": [ids]}."""
+        links, many = self.model.__fyro_links__, self.model.__fyro_many__
+        by_ids = {ids: name for name, ids in many.items()}
+        plain: dict[str, Any] = {}
+        linked: dict[str, list[Any]] = {}
         for name, value in values.items():
-            if name in links and hasattr(value, "__table__"):  # an instance, not an id
-                target = self.model.__mapper__.relationships[name].mapper.class_
-                if not isinstance(value, target):
-                    raise TypeError(
-                        f"{self.model.__name__}.{name}: expected {target.__name__}, "
-                        f"got {type(value).__name__}."
-                    )
-                value = getattr(value, next(iter(target.__table__.primary_key.columns)).key)
-            resolved[links.get(name, name)] = value
-        return resolved
+            name = by_ids.get(name, name)
+            if name in many:
+                linked[name] = list(dict.fromkeys(self._target_id(name, v) for v in value))
+            elif name in links:
+                plain[links[name]] = self._target_id(name, value)
+            else:
+                plain[name] = value
+        return plain, linked
+
+    def _has(self, name: str, value: Any) -> Any:
+        """Rows linked to `value` through the ManyToMany `name` (an EXISTS subquery)."""
+        relation = getattr(self.model, name)
+        target_pk = next(iter(relation.property.mapper.class_.__table__.primary_key.columns))
+        return relation.any(target_pk == self._target_id(name, value))
+
+    def _lookups(self, lookups: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        many = {n: lookups.pop(n) for n in list(lookups) if n in self.model.__fyro_many__}
+        plain, ids = self._resolve(lookups)
+        if ids:
+            name = next(iter(ids))
+            raise TypeError(
+                f"{self.model.__name__}.{self.model.__fyro_many__[name]}: filter a ManyToMany "
+                f"by one row with `{name}=`."
+            )
+        return plain, many
 
     def filter(self, **lookups: Any) -> "QuerySet":
-        lookups = self._resolve(lookups)
+        plain, many = self._lookups(lookups)
         conditions = tuple(
             self._column(name).is_(None) if value is None else self._column(name) == value
-            for name, value in lookups.items()
-        )
+            for name, value in plain.items()
+        ) + tuple(self._has(name, value) for name, value in many.items())
         return replace(self, where=self.where + conditions)
 
     def exclude(self, **lookups: Any) -> "QuerySet":
         if not lookups:
             return self
-        lookups = self._resolve(lookups)
+        plain, many = self._lookups(lookups)
         # IS DISTINCT FROM keeps NULL rows, like Django's exclude().
         condition = or_(
-            *(self._column(name).is_distinct_from(value) for name, value in lookups.items())
+            *(self._column(name).is_distinct_from(value) for name, value in plain.items()),
+            *(~self._has(name, value) for name, value in many.items()),
         )
         return replace(self, where=(*self.where, condition))
 
@@ -86,6 +117,17 @@ class QuerySet:
                 )
         return replace(self, related=self.related + names)
 
+    def prefetch_related(self, *names: str) -> "QuerySet":
+        """Load these ManyToManys with one extra query for all rows."""
+        many = self.model.__fyro_many__
+        for name in names:
+            if name not in many:
+                raise TypeError(
+                    f"{self.model.__name__}.{name}: not a ManyToMany. "
+                    f"ManyToMany fields: {', '.join(many) or 'none'}."
+                )
+        return replace(self, related=self.related + names)
+
     def limit(self, n: int) -> "QuerySet":
         return replace(self, limit_=n)
 
@@ -95,7 +137,13 @@ class QuerySet:
     def _select(self) -> Any:
         stmt = select(self.model).where(*self.where).order_by(*self.order)
         if self.related:
-            stmt = stmt.options(*(joinedload(getattr(self.model, n)) for n in self.related))
+            many = self.model.__fyro_many__
+            stmt = stmt.options(
+                *(
+                    (selectinload if n in many else joinedload)(getattr(self.model, n))
+                    for n in self.related
+                )
+            )
         if self.limit_ is not None:
             stmt = stmt.limit(self.limit_)
         if self.offset_ is not None:
@@ -136,21 +184,49 @@ class QuerySet:
         )
         return (await engine.default_engine.fetch(stmt))[0]
 
+    def _pk(self) -> Any:
+        return next(iter(self.model.__table__.primary_key.columns))
+
+    async def _link(self, name: str, rows: list[Any], targets: list[Any], *, new: bool) -> None:
+        """Set the ManyToMany `name` of `rows` to exactly `targets` (join table, Core only)."""
+        table = self.model.__mapper__.relationships[name].secondary
+        source, target = table.columns
+        if not new:
+            await engine.default_engine.execute(delete(table).where(source.in_(rows)))
+        if rows and targets:
+            pairs = [{source.key: row, target.key: t} for row in rows for t in targets]
+            await engine.default_engine.execute(insert(table).values(pairs))
+
     async def create(self, **values: Any) -> Any:
-        values = self._resolve(values)
+        values, linked = self._resolve(values)
         for name in values:
             self._column(name)
         stmt = insert(self.model).values(**values).returning(self.model)
-        return (await engine.default_engine.fetch(stmt))[0]
+        row = (await engine.default_engine.fetch(stmt))[0]
+        for name, targets in linked.items():
+            await self._link(name, [getattr(row, self._pk().key)], targets, new=True)
+        return row
 
     async def update(self, **values: Any) -> int:
+        """Update matching rows; a ManyToMany value replaces each row's whole set."""
         self._check_bulk("update")
-        values = self._resolve(values)
+        values, linked = self._resolve(values)
         for name in values:
             self._column(name)
-        return await engine.default_engine.execute(
-            update(self.model).where(*self.where).values(**values)
+        # Pick the rows before the UPDATE, which may change what the filter matches.
+        rows = (
+            await engine.default_engine.fetch(select(self._pk()).where(*self.where))
+            if linked
+            else []
         )
+        count = len(rows)
+        if values:
+            count = await engine.default_engine.execute(
+                update(self.model).where(*self.where).values(**values)
+            )
+        for name, targets in linked.items():
+            await self._link(name, rows, targets, new=False)
+        return count
 
     async def delete(self) -> int:
         self._check_bulk("delete")

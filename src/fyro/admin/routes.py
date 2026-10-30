@@ -155,36 +155,61 @@ def link_targets(model: Any) -> dict[str, Any]:
     }
 
 
+def many_targets(model: Any) -> dict[str, Any]:
+    """ManyToMany ids field -> target model, e.g. {"tag_ids": Tag}."""
+    return {
+        ids: model.__mapper__.relationships[name].mapper.class_
+        for name, ids in model.__fyro_many__.items()
+    }
+
+
 def target_pk(target: Any) -> Any:
     return next(iter(target.__table__.primary_key.columns))
 
 
+def blank_option(model: Any, field: str) -> list[tuple[str, str]]:
+    """An empty choice for an optional ForeignKey; never for a ManyToMany."""
+    column = model.__table__.c.get(field)
+    return [("", "—")] if column is not None and column.nullable else []
+
+
+async def rows_by_id(target: Any, raw_ids: list[str]) -> list[Any]:
+    """The target rows with these ids (as submitted text), skipping invalid or missing ones."""
+    pk = target_pk(target)
+    rows = []
+    for raw in raw_ids:
+        try:
+            row = await target.objects.filter(**{pk.key: pk.type.python_type(raw)}).first()
+        except (TypeError, ValueError):
+            continue
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
 async def fill_links(entry: Entry, fields: list[forms.FormField]) -> list[forms.FormField]:
-    """Options for link fields: every target row, or only the current one plus a search box."""
-    targets = link_targets(entry.model)
+    """Options for link fields: every target row, or only the picked ones plus a search box."""
+    targets = link_targets(entry.model) | many_targets(entry.model)
     for form_field in fields:
-        if form_field.widget != "link":
+        if form_field.widget not in ("link", "links"):
             continue
         target = targets[form_field.name]
         pk = target_pk(target)
-        blank = [("", "—")] if entry.model.__table__.c[form_field.name].nullable else []
         if await target.objects.count() <= PICKER_LIMIT:
             rows = await target.objects.order_by(pk.key).all()
         else:
             form_field.search_url = f"{entry.url}/link-options/{form_field.name}"
-            try:
-                current = pk.type.python_type(form_field.value) if form_field.value else None
-            except (TypeError, ValueError):
-                current = None
-            rows = [] if current is None else await target.objects.filter(**{pk.key: current}).all()
-        form_field.options = blank + [
+            picked = form_field.values if form_field.widget == "links" else [form_field.value]
+            rows = await rows_by_id(target, [v for v in picked if v])
+        form_field.options = blank_option(entry.model, form_field.name) + [
             (forms.as_input(getattr(row, pk.key)), forms.row_label(row)) for row in rows
         ]
     return fields
 
 
 async def get_row(entry: Entry, pk: Any) -> Any:
-    row = await entry.model.objects.filter(**{pk_name(entry): pk}).first()
+    qs = entry.model.objects.prefetch_related(*entry.model.__fyro_many__)  # for the form
+    row = await qs.filter(**{pk_name(entry): pk}).first()
     if row is None:
         raise HTTPException(404, "Not found.")
     return row
@@ -408,6 +433,8 @@ def with_errors(
         if form is not None and not form_field.readonly and form_field.widget != "password":
             if form_field.widget == "checkbox":
                 form_field.checked = form_field.name in form
+            elif form_field.widget == "links":
+                form_field.values = form.get(form_field.name, [])
             else:
                 form_field.value = form.get(form_field.name, [""])[0]
     return fields
@@ -599,26 +626,29 @@ async def delete(
 async def link_options(
     request: Request, app_label: str, segment: str, field: str, user: Superuser
 ) -> HTMLResponse:
-    """<option>s for a link field's search box: target rows matching ?_search=, or its id."""
+    """<option>s for a link field's search box: target rows matching ?_search=, or its id.
+    A ManyToMany sends its picks too (?tag_ids=7): they stay first and selected."""
     entry = find_entry(app_label, segment)
-    target = link_targets(entry.model).get(field)
+    target = (link_targets(entry.model) | many_targets(entry.model)).get(field)
     if target is None:
         raise HTTPException(404, "Not found.")
     pk = target_pk(target)
     term = request.query_params.get("_search", "").strip()
-    rows = await list_query(target, {}, term or None).limit(PICKER_LIMIT).all()
-    try:
-        by_id = await target.objects.filter(**{pk.key: pk.type.python_type(term)}).first()
-    except (TypeError, ValueError):
-        by_id = None
-    if by_id is not None and all(getattr(r, pk.key) != getattr(by_id, pk.key) for r in rows):
-        rows.insert(0, by_id)
-    blank = [("", "—")] if entry.model.__table__.c[field].nullable else []
+    picked = await rows_by_id(target, request.query_params.getlist(field))
+    found = await list_query(target, {}, term or None).limit(PICKER_LIMIT).all()
+    found = await rows_by_id(target, [term]) + found
+    seen = {getattr(r, pk.key) for r in picked}
+    rows = [(r, True) for r in picked]
+    for row in found:
+        if getattr(row, pk.key) not in seen:
+            seen.add(getattr(row, pk.key))
+            rows.append((row, False))
+    blank = [(value, text, False) for value, text in blank_option(entry.model, field)]
     return TEMPLATES.TemplateResponse(
         request,
         "link_options.html",
         {
             "options": blank
-            + [(forms.as_input(getattr(r, pk.key)), forms.row_label(r)) for r in rows]
+            + [(forms.as_input(getattr(r, pk.key)), forms.row_label(r), sel) for r, sel in rows]
         },
     )

@@ -1,1 +1,1 @@
-{% for value, text in options %}<option value="{{ value }}">{{ text }}</option>{% endfor %}
+{% for value, text, selected in options %}<option value="{{ value }}" {% if selected %}selected{% endif %}>{{ text }}</option>{% endfor %}

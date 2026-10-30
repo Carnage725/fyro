@@ -223,18 +223,18 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 **Goal:** `tags: list[Tag] = ManyToMany()` end to end: model, queries, API, migrations, admin.
 
 **Behavior**
-- Join table `<table>_<field>` (e.g. `blog_post_tags`) with columns `<model>_id`, `<target>_id`, both the primary key, both `ON DELETE CASCADE`. Not a Model; fyro owns it.
-- Schemas: `Create`/`Update`/`Read` contain `tag_ids: list[int]`. On update, `tag_ids` replaces the whole set. Unknown ids: 422 naming them.
-- Queries: `prefetch_related("tags")`, `filter(tags=tag)`, `filter(tag_ids=...)` is not supported until `__in` (Phase 17).
-- API: `?expand=tags`. Reading `tag_ids` in a list costs one extra query for the whole page.
+- Join table `<table>_<field>` (e.g. `blog_post_tags`) with columns `<model>_id`, `<target>_id`, both the primary key, both `ON DELETE CASCADE`, the second indexed. Not a Model; fyro owns it.
+- The ids field is the field name made singular plus `_ids`: `tags` gives `tag_ids`, `categories` gives `category_ids`, `staff` gives `staff_ids`. `Create`/`Update`/`Read` contain it as `list[int]` (Create defaults to `[]`). On update it replaces the whole set. Ids come back sorted.
+- Writes go through the manager (decision at the step 1 spike, over Django's `post.tags.add()`): `create(tags=[news, tech])` or `create(tag_ids=[1, 2])`; `filter(...).update(tags=[...])` replaces the set of every matching row (rows are picked before the UPDATE runs).
+- Queries: `prefetch_related("tags")` (one extra query for all rows), `filter(tags=tag)` / `exclude(tags=tag)` with a row or an id. `filter(tag_ids=...)` waits for `__in` (Phase 17). Reading `post.tags` or `post.tag_ids` unloaded raises `NotLoaded` naming `prefetch_related`.
+- API: `tag_ids` is read for every row (one extra query per page), `?expand=tags`. Unknown ids: 422 naming the first missing one (`tag_ids: no Tag with id 42.`).
 - Migrations: the join table is created and dropped with the field.
-- Admin: multi-select (search box over 100 rows).
+- Admin: multi-select; over 100 target rows, a search box that keeps the current picks selected.
 
-**Steps and checks**
-1. **Spike + decision (human):** how Python code changes a set of tags. Options: (a) only through `create(..., tag_ids=[...])` and `update(tag_ids=[...])` on the manager; (b) Django-style `await post.tags.add(tag)` / `.remove()` / `.set()`. Report what each costs, then the user picks.
-2. Write failing tests for each part above. Verify: they fail.
-3. Implement. Verify: tests pass, including query counts.
-4. **Gate (human, demo):** the full north-star app.
+**Steps and checks** (done)
+1. Spike + decision: manager writes. Verified SQLAlchemy `secondary=` with `lazy="raise"`, `selectinload` (2 queries for 20 rows) and Core writes against Postgres.
+2. Tests for each part, then implementation. Query counts tested.
+3. **Gate (human, demo):** the full north-star app.
 
 ---
 

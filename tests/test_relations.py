@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from fyro import Field, ForeignKey, Model, apps
+from fyro import Field, ForeignKey, ManyToMany, Model, apps
 from fyro.apps import Registry
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -258,3 +258,99 @@ async def test_create_all_creates_constraint_and_index():
         "fk_blog_post_editor_id_blog_author": (["editor_id"], "blog_author", "SET NULL"),
     }
     assert {i["name"] for i in indexes} == {"ix_blog_post_author_id", "ix_blog_post_editor_id"}
+
+
+# --- ManyToMany (phase 16) -------------------------------------------------
+
+
+def tagged():
+    class Tag(Model):
+        __module__ = "blog.models"
+        name: str = Field(max_length=50)
+
+    class Category(Model):
+        __module__ = "blog.models"
+        name: str
+
+    class Post(Model):
+        __module__ = "blog.models"
+        title: str
+        tags: list[Tag] = ManyToMany()
+        categories: list[Category] = ManyToMany()
+
+    return Tag, Category, Post
+
+
+def test_many_to_many_join_table():
+    tagged()
+    table = Model.metadata.tables["blog_post_tags"]
+    assert [c.name for c in table.columns] == ["post_id", "tag_id"]
+    assert all(c.primary_key for c in table.columns)
+    assert all(isinstance(c.type, sa.BigInteger) for c in table.columns)
+    targets = {c.name: next(iter(c.foreign_keys)) for c in table.columns}
+    assert targets["post_id"].target_fullname == "blog_post.id"
+    assert targets["tag_id"].target_fullname == "blog_tag.id"
+    assert {fk.ondelete for fk in targets.values()} == {"CASCADE"}
+    assert table.c.tag_id.index  # post_id is first in the primary key index already
+    assert "blog_post_categories" in Model.metadata.tables
+
+
+def test_many_to_many_adds_no_column_and_raises_on_lazy_load():
+    Tag, _, Post = tagged()
+    assert [c.name for c in Post.__table__.columns] == ["id", "title"]
+    prop = Post.tags.property
+    assert prop.mapper.class_ is Tag
+    assert prop.lazy == "raise"
+
+
+def test_many_to_many_schemas_use_ids():
+    _, _, Post = tagged()
+    for schema in (Post.Create, Post.Read, Post.Update):
+        assert "tag_ids" in schema.model_fields and "category_ids" in schema.model_fields
+        assert "tags" not in schema.model_fields
+    assert Post.Create(title="t").tag_ids == []
+    assert Post.Update().model_dump(exclude_unset=True) == {}
+    assert Post.Create(title="t", tag_ids=[1, 2]).tag_ids == [1, 2]
+
+
+def test_many_to_many_meta_exclude_uses_ids_name():
+    class Tag(Model):
+        __module__ = "blog.models"
+        name: str
+
+    class Post(Model):
+        __module__ = "blog.models"
+        tags: list[Tag] = ManyToMany()
+
+        class Meta:
+            read_exclude = ("tag_ids",)
+
+    assert "tag_ids" not in Post.Read.model_fields
+
+
+def test_list_of_model_without_many_to_many_is_error():
+    Author = author_model()
+    with pytest.raises(TypeError, match=r"Post\.authors: .*ManyToMany\(\)"):
+
+        class Post(Model):
+            __module__ = "blog.models"
+            authors: list[Author]
+
+
+def test_many_to_many_needs_list_of_model():
+    Author = author_model()
+    with pytest.raises(TypeError, match=r"Post\.author: .*list\[Model\]"):
+
+        class Post(Model):
+            __module__ = "blog.models"
+            author: Author = ManyToMany()
+
+
+def test_many_to_many_ids_name_clash_is_error():
+    Author = author_model()
+    with pytest.raises(TypeError, match=r"Post\.author_ids"):
+
+        class Post(Model):
+            __module__ = "blog.models"
+            author_ids: str
+            authors: list[Author] = ManyToMany()

@@ -13,7 +13,7 @@ from sqlalchemy import event, text
 from support import MigratedSchema
 
 import fyro.db
-from fyro import Field, ForeignKey, Model, apps, create_app
+from fyro import Field, ForeignKey, ManyToMany, Model, apps, create_app
 from fyro.apps import Registry
 from fyro.conf import get_settings
 from fyro.db import engine as db_engine
@@ -58,6 +58,7 @@ async def app(tmp_path_factory):
             author: Author = ForeignKey(on_delete="cascade")
             editor: Author | None = ForeignKey(on_delete="set_null", default=None)
             tag: Tag | None = ForeignKey(on_delete="set_null", default=None)
+            tags: list[Tag] = ManyToMany()
 
         class Review(Model):
             __module__ = "blog.models"
@@ -81,7 +82,7 @@ async def client(app):
     async with fyro.db.get_engine().begin() as conn:
         await conn.execute(
             text(
-                "TRUNCATE auth_user, auth_session, blog_author, blog_tag, blog_post, "
+                "TRUNCATE auth_user, auth_session, blog_author, blog_tag, blog_post_tags, blog_post, "
                 "blog_review RESTART IDENTITY"
             )
         )
@@ -189,7 +190,7 @@ async def test_link_options_unknown_field_is_404(client):
 
 async def test_save_with_picked_row(client):
     await seed_authors()
-    data = {"title": "t", "author_id": "2", "editor_id": "", "tag_id": ""}
+    data = {"title": "t", "author_id": "2", "editor_id": "", "tag_id": "", "tag_ids": []}
     response = await client.post("/admin/blog/post/add", data=data, headers=HX)
     assert response.headers["hx-redirect"] == "/admin/blog/post"
     assert await sql("SELECT author_id, editor_id FROM blog_post") == [(2, None)]
@@ -197,7 +198,7 @@ async def test_save_with_picked_row(client):
 
 async def test_save_with_missing_row_shows_field_error(client):
     await seed_authors()
-    data = {"title": "t", "author_id": "999", "editor_id": "", "tag_id": ""}
+    data = {"title": "t", "author_id": "999", "editor_id": "", "tag_id": "", "tag_ids": []}
     response = await client.post("/admin/blog/post/add", data=data, headers=HX)
     assert response.status_code == 422
     assert "author_id: no Author with id 999." in response.text
@@ -250,3 +251,60 @@ async def test_delete_restricted_row_shows_error(client):
     )
     assert response.status_code == 409
     assert await sql("SELECT count(*) FROM blog_author") == [(2,)]
+
+
+# --- ManyToMany (phase 16) -------------------------------------------------
+
+
+async def test_many_to_many_is_a_multi_select_that_saves_and_clears(client):
+    await seed_authors()
+    await sql("INSERT INTO blog_tag (name) VALUES ('news'), ('tech'), ('misc')")
+    html = (await client.get("/admin/blog/post/add")).text
+    assert re.search(r'<label for="f-tag_ids">Tags</label>', html)
+    assert re.search(r'<select[^>]*name="tag_ids"[^>]*multiple', html)
+    assert [v for v, _, _ in options(html, "tag_ids")] == ["1", "2", "3"]
+
+    data = {"title": "t", "author_id": "1", "editor_id": "", "tag_id": "", "tag_ids": ["3", "1"]}
+    response = await client.post("/admin/blog/post/add", data=data, headers=HX)
+    assert response.headers["hx-redirect"] == "/admin/blog/post"
+    assert await sql("SELECT tag_id FROM blog_post_tags ORDER BY tag_id") == [(1,), (3,)]
+
+    edit = (await client.get("/admin/blog/post/1")).text
+    assert [(v, sel) for v, _, sel in options(edit, "tag_ids")] == [
+        ("1", True),
+        ("2", False),
+        ("3", True),
+    ]
+    data["tag_ids"] = []  # nothing selected: the browser sends no tag_ids at all
+    response = await client.post(
+        "/admin/blog/post/1", data={k: v for k, v in data.items() if v != []}, headers=HX
+    )
+    assert response.headers["hx-redirect"] == "/admin/blog/post"
+    assert await sql("SELECT count(*) FROM blog_post_tags") == [(0,)]
+
+
+async def test_many_to_many_missing_row_shows_field_error(client):
+    await seed_authors()
+    data = {"title": "t", "author_id": "1", "tag_ids": ["999"]}
+    response = await client.post("/admin/blog/post/add", data=data, headers=HX)
+    assert response.status_code == 422
+    assert "tag_ids: no Tag with id 999." in response.text
+
+
+async def test_many_to_many_with_many_targets_searches_and_keeps_selection(client):
+    await seed_authors()
+    await sql(
+        "INSERT INTO blog_tag (name) SELECT 'tag ' || n FROM generate_series(1, 101) AS n",
+        "INSERT INTO blog_post (title, author_id) VALUES ('t', 1)",
+        "INSERT INTO blog_post_tags (post_id, tag_id) VALUES (1, 7)",
+    )
+    html = (await client.get("/admin/blog/post/1")).text
+    assert 'hx-get="/admin/blog/post/link-options/tag_ids"' in html
+    assert 'hx-include="#f-tag_ids"' in html
+    assert options(html, "tag_ids") == [("7", "Tag #7", True)]
+
+    found = await client.get(
+        "/admin/blog/post/link-options/tag_ids", params={"_search": "tag 10", "tag_ids": "7"}
+    )
+    picked = re.findall(r'<option value="([^"]*)"\s*(selected)?', found.text)
+    assert picked == [("7", "selected"), ("10", ""), ("100", ""), ("101", "")]

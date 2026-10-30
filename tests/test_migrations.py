@@ -471,7 +471,7 @@ def test_optional_to_required_without_default_is_refused(project):
 # --- relations (phase 13) --------------------------------------------------
 
 AUTHOR = """
-    from fyro import Field, ForeignKey, Model
+    from fyro import Field, ForeignKey, ManyToMany, Model
 
     class Author(Model):
         name: str = Field(max_length=100)
@@ -651,3 +651,26 @@ def test_rename_of_different_type_is_not_asked(project):
     path, asked = renamed(project, "writer: int | None = None", True)
     assert asked == []
     assert "drop_column" in path.read_text()
+
+
+# --- ManyToMany (phase 16) -------------------------------------------------
+
+
+def test_many_to_many_adds_and_drops_its_join_table(project):
+    _, write_models = project
+    with_rows(project, "authors: list[Author] = ManyToMany()")
+    source = migrations.makemigrations().read_text()
+    assert "op.create_table('blog_post_authors'" in source
+    assert "add_column" not in source  # blog_post itself is unchanged
+    migrations.migrate()
+    run_sql(DB_URL, "INSERT INTO blog_post_authors (post_id, author_id) VALUES (1, 2)")
+    assert migrations.makemigrations() is None
+    run_sql(DB_URL, "DELETE FROM blog_author WHERE id = 2")
+    assert run_sql(DB_URL, "SELECT count(*) FROM blog_post_authors") == [(0,)]
+
+    write_models(AUTHOR)
+    assert "op.drop_table('blog_post_authors')" in migrations.makemigrations().read_text()
+    migrations.migrate()
+    assert "blog_post_authors" not in tables()
+    migrations.migrate("zero")
+    assert tables() == {"alembic_version"}
