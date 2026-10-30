@@ -174,9 +174,10 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 
 **Behavior**
 - New tables with foreign keys are created in dependency order (target first), across apps.
-- Adding a NOT NULL `ForeignKey` to a table with rows follows the locked "New NOT NULL columns" rule: with no default, it is refused with an error that says to add it as `T | None` first, fill it, then make it required.
+- Adding a NOT NULL `ForeignKey` to a table with rows (or making an optional one required) follows the locked "New NOT NULL columns" rule: with no default, it is refused with an error that says to give it `default=<id of an existing row>` (removable after migrating) or keep it optional. With a default, old rows get that id.
 - Changing `on_delete` drops and recreates the constraint.
-- `fyro.auth.Session.user_id` becomes `user: User = ForeignKey(on_delete="cascade")`. The migration first deletes sessions whose user no longer exists, then adds the constraint. Logging in then loads the user with one join instead of two queries.
+- Turning a plain id column into a `ForeignKey` (e.g. `author_id: int` into `author: Author = ForeignKey(...)`): rows pointing at a missing row get the `on_delete` treatment first (`cascade` deletes them, `set_null` clears them, `restrict` leaves them and the migration fails), with a warning from `makemigrations`.
+- `fyro.auth.Session.user_id` becomes `user: User = ForeignKey(on_delete="cascade")`, through the rule above: sessions of deleted users are removed, then the constraint is added. An authenticated request then loads session and user in one SELECT instead of two.
 
 **Steps and checks**
 1. Write failing migration tests: create, add nullable FK to a table with rows, refuse NOT NULL FK without default, change `on_delete`, migrate down to `"zero"`. Verify: they fail.

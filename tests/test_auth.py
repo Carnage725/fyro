@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from fastapi import APIRouter, Depends
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 from support import MigratedSchema
 
 import fyro.db
@@ -427,3 +427,32 @@ async def test_no_password_hash_in_any_response_or_openapi(client, app):
     assert not any("$argon2" in body for body in bodies)
     read_schema = app.openapi()["components"]["schemas"]["UserRead"]
     assert "password" not in read_schema["properties"]
+
+
+# --- sessions link to users (phase 13) -------------------------------------
+
+
+async def test_deleting_a_user_deletes_their_sessions(client):
+    await make_user()
+    await login(client)
+    await sql("DELETE FROM auth_user")
+    assert await sql("SELECT count(*) FROM auth_session") == [(0,)]
+
+
+async def test_authenticated_request_loads_session_and_user_in_one_select(client):
+    await make_user()
+    token = await login(client)
+    selects: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    engine = fyro.db.get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        response = await client.get("/api/blog/mine", headers=bearer(token))
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert response.json() == {"username": "alice"}
+    assert len(selects) == 1

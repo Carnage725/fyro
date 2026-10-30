@@ -466,3 +466,127 @@ def test_optional_to_required_without_default_is_refused(project):
     with pytest.raises(ImproperlyConfigured, match=r"Post\.subtitle.*default"):
         optional_then_required(project, "subtitle: str | None = None", "subtitle: str")
     assert len(revision_files(root)) == 1
+
+
+# --- relations (phase 13) --------------------------------------------------
+
+AUTHOR = """
+    from fyro import Field, ForeignKey, Model
+
+    class Author(Model):
+        name: str = Field(max_length=100)
+
+    class Post(Model):
+        title: str = Field(max_length=200)
+"""
+
+
+def with_rows(project, post_field=""):
+    """Migrate Author + Post (two posts, authors 1 and 2) and add `post_field` to Post."""
+    _, write_models = project
+    write_models(AUTHOR)
+    migrations.makemigrations()
+    migrations.migrate()
+    run_sql(
+        DB_URL,
+        "INSERT INTO blog_author (name) VALUES ('ana'), ('bob')",
+        "INSERT INTO blog_post (title) VALUES ('a'), ('b')",
+    )
+    write_models(AUTHOR + f"        {post_field}\n")
+
+
+def on_delete_of(constraint):
+    (row,) = run_sql(
+        DB_URL, f"SELECT confdeltype::text FROM pg_constraint WHERE conname = '{constraint}'"
+    )
+    return row[0]
+
+
+def test_foreign_key_migrates_up_and_down(project):
+    _, write_models = project
+    write_models(AUTHOR + '        author: Author = ForeignKey(on_delete="cascade")\n')
+    source = migrations.makemigrations().read_text()
+    assert source.index("create_table('blog_author'") < source.index("create_table('blog_post'")
+    migrations.migrate()
+    assert on_delete_of("fk_blog_post_author_id_blog_author") == "c"
+    assert migrations.makemigrations() is None
+    migrations.migrate("zero")
+    assert tables() == {"alembic_version"}
+
+
+def test_nullable_foreign_key_on_table_with_rows_is_a_plain_add(project):
+    with_rows(project, 'author: Author | None = ForeignKey(on_delete="set_null", default=None)')
+    migrations.makemigrations()
+    migrations.migrate()
+    assert run_sql(DB_URL, "SELECT author_id FROM blog_post") == [(None,), (None,)]
+
+
+def test_required_foreign_key_without_default_on_table_with_rows_is_refused(project):
+    root, _ = project
+    with_rows(project, 'author: Author = ForeignKey(on_delete="cascade")')
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"Post\.author_id: .*link to Author\. .*default=<id of an existing Author>.*Author \| None",
+    ):
+        migrations.makemigrations()
+    assert len(revision_files(root)) == 1
+
+
+def test_required_foreign_key_with_default_fills_old_rows(project):
+    with_rows(project, 'author: Author = ForeignKey(on_delete="cascade", default=2)')
+    migrations.makemigrations()
+    migrations.migrate()
+    assert run_sql(DB_URL, "SELECT author_id FROM blog_post") == [(2,), (2,)]
+    assert column_state("author_id") == ("NO", None)
+
+
+def test_optional_to_required_foreign_key_without_default_is_refused(project):
+    _, write_models = project
+    with_rows(project, 'author: Author | None = ForeignKey(on_delete="set_null", default=None)')
+    migrations.makemigrations()
+    migrations.migrate()
+    write_models(AUTHOR + '        author: Author = ForeignKey(on_delete="cascade")\n')
+    with pytest.raises(ImproperlyConfigured, match=r"Post\.author_id: .*default=<id"):
+        migrations.makemigrations()
+
+
+def test_changing_on_delete_recreates_constraint(project):
+    _, write_models = project
+    with_rows(project, 'author: Author | None = ForeignKey(on_delete="cascade", default=None)')
+    migrations.makemigrations()
+    migrations.migrate()
+    write_models(AUTHOR + '        author: Author | None = ForeignKey(on_delete="set_null")\n')
+    assert migrations.makemigrations() is not None
+    migrations.migrate()
+    assert on_delete_of("fk_blog_post_author_id_blog_author") == "n"
+    assert migrations.makemigrations() is None
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ('author: Author = ForeignKey(on_delete="cascade")', [("a", 1)]),
+        ('author: Author | None = ForeignKey(on_delete="set_null")', [("a", 1), ("b", None)]),
+    ],
+    ids=["cascade-deletes-orphans", "set-null-clears-orphans"],
+)
+def test_plain_id_column_becomes_foreign_key_and_orphans_follow_on_delete(
+    project, caplog, field, expected
+):
+    # fyro.auth's Session.user_id was a plain column before relations
+    _, write_models = project
+    plain = "author_id: int = Field(index=True)" if "cascade" in field else "author_id: int | None"
+    write_models(AUTHOR + f"        {plain}\n")
+    migrations.makemigrations()
+    migrations.migrate()
+    run_sql(
+        DB_URL,
+        "INSERT INTO blog_author (name) VALUES ('ana')",
+        "INSERT INTO blog_post (title, author_id) VALUES ('a', 1), ('b', 99)",
+    )
+    write_models(AUTHOR + f"        {field}\n")
+    with caplog.at_level(logging.WARNING, logger="fyro.migrations"):
+        migrations.makemigrations()
+    assert re.search(r"blog_post\.author_id.*missing blog_author", caplog.text)
+    migrations.migrate()
+    assert run_sql(DB_URL, "SELECT title, author_id FROM blog_post ORDER BY title") == expected

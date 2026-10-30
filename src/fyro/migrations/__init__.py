@@ -28,7 +28,7 @@ from sqlalchemy.pool import NullPool
 
 from fyro import apps
 from fyro.conf import SETTINGS_ENV_VAR, ImproperlyConfigured, get_settings
-from fyro.models.fields import MISSING
+from fyro.models.fields import MISSING, ForeignKeyInfo
 
 __all__ = ["makemigrations", "migrate"]
 
@@ -136,10 +136,13 @@ def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
         if not isinstance(table_ops, ops.ModifyTableOps):
             continue
         model = models[table_ops.table_name]
+        added = {op.column.name for op in table_ops.ops if isinstance(op, ops.AddColumnOp)}
         rewritten: list[Any] = []
         for op in table_ops.ops:
             column = getattr(op, "column", None)
-            if (
+            if isinstance(op, ops.CreateForeignKeyOp) and op.local_cols[0] not in added:
+                rewritten.extend(_fix_orphans(model, op))
+            elif (
                 isinstance(op, ops.AddColumnOp)
                 and not column.nullable
                 and column.server_default is None
@@ -152,10 +155,47 @@ def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
         table_ops.ops = rewritten
 
 
+def _fix_orphans(model: Any, create: ops.CreateForeignKeyOp) -> list[Any]:
+    """A foreign key added to a column that already has values (a plain `author_id: int`
+    turned into a ForeignKey): rows pointing at a missing row get the on_delete treatment
+    first, so adding the constraint does not fail. "restrict" leaves them, and fails."""
+    (name,) = create.local_cols
+    (remote,) = create.remote_cols
+    (key,) = model.__table__.c[name].foreign_keys
+    quote = postgresql.dialect().identifier_preparer.quote
+    table, target = quote(create.source_table), quote(create.referent_table)
+    orphan = (
+        f"{quote(name)} IS NOT NULL AND NOT EXISTS "
+        f"(SELECT 1 FROM {target} WHERE {target}.{quote(remote)} = {table}.{quote(name)})"
+    )
+    if key.ondelete == "CASCADE":
+        fix, done = f"DELETE FROM {table} WHERE {orphan}", "deleted"
+    elif key.ondelete == "SET NULL":
+        fix, done = f"UPDATE {table} SET {quote(name)} = NULL WHERE {orphan}", "set to NULL"
+    else:
+        return [create]
+    logger.warning(
+        "%s.%s: rows pointing at a missing %s are %s (on_delete) before the foreign key is added.",
+        create.source_table,
+        name,
+        create.referent_table,
+        done,
+    )
+    return [ops.ExecuteSQLOp(fix), create]
+
+
 def _fill_value(model: Any, name: str) -> tuple[str, Any]:
     """("constant", value) or ("sql", expression) for filling existing rows; refuses otherwise."""
     info = model.__fyro_fields__[name]
     where = f"{model.__name__}.{name}"
+    if isinstance(info, ForeignKeyInfo) and info.default is MISSING:
+        link = name.removesuffix("_id")
+        target = model.__mapper__.relationships[link].mapper.class_.__name__
+        raise ImproperlyConfigured(
+            f"{where}: the rows already in the table need a value for this required link to {target}. "
+            f"Give it ForeignKey(..., default=<id of an existing {target}>) (you can remove the "
+            f"default after migrating), or make it optional (`{link}: {target} | None`)."
+        )
     if info.default_factory is None and info.default is not MISSING:
         if info.unique:
             raise ImproperlyConfigured(

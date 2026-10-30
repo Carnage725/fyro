@@ -91,13 +91,13 @@ def clear_cookie(response: Response) -> None:
 
 
 async def _user_for(token: str) -> User | None:
-    session = await Session.objects.filter(token_hash=_hash(token)).first()
+    session = await Session.objects.select_related("user").filter(token_hash=_hash(token)).first()
     if session is None:
         return None
     now = utcnow()
     if now >= session.expires_at or now >= session.last_seen + IDLE_TIMEOUT:
         return None
-    user = await User.objects.filter(id=session.user_id, is_active=True).first()
+    user = session.user if session.user.is_active else None
     if user is not None and now - session.last_seen >= TOUCH_INTERVAL:
         await Session.objects.filter(id=session.id).update(last_seen=now)
     return user

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fyro import Field, Model
+from fyro import Field, ForeignKey, Model
 
 
 def utcnow() -> datetime:
@@ -25,7 +25,7 @@ class User(Model):
 class Session(Model):
     # SHA-256 of the token: a leaked table holds no usable sessions.
     token_hash: str = Field(max_length=64, unique=True)
-    user_id: int = Field(index=True)  # a plain column until relations (v0.2)
+    user: User = ForeignKey(on_delete="cascade")
     created_at: datetime = Field(default_factory=utcnow)
     last_seen: datetime = Field(default_factory=utcnow)
     expires_at: datetime
