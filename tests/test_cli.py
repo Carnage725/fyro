@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 from typer.testing import CliRunner
 
-from fyro import Model, apps
+from fyro import Model, apps, cli
 from fyro.apps import Registry
 from fyro.cli import app
 from fyro.conf import get_settings
@@ -258,6 +258,29 @@ def test_makemigrations_and_migrate_flow(project):
     zero = runner.invoke(app, ["migrate", "zero"])
     assert zero.exit_code == 0, zero.output
     assert "Database is at zero (empty)" in zero.output
+
+
+@pytest.mark.parametrize(
+    ("args", "interactive", "asks"),
+    [([], True, True), (["--noinput"], True, False), ([], False, False)],
+    ids=["terminal", "noinput", "no-terminal"],
+)
+def test_makemigrations_asks_about_renames_only_in_a_terminal(
+    project, monkeypatch, args, interactive, asks
+):
+    runner.invoke(app, ["startapp", "blog"])
+    install(project, "blog")
+    seen = {}
+
+    def fake(message=None, ask_rename=None):
+        seen["answer"] = ask_rename and ask_rename("blog_post", "author", "writer")
+
+    monkeypatch.setattr(cli.migrations, "makemigrations", fake)
+    monkeypatch.setattr(cli, "_interactive", lambda: interactive)
+    result = runner.invoke(app, ["makemigrations", *args], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert seen["answer"] is (True if asks else None)
+    assert ("Was blog_post.author renamed to writer?" in result.output) is asks
 
 
 def test_makemigrations_custom_message(project):

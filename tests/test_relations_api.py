@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 from sqlalchemy import event, text
 from support import MigratedSchema
 
@@ -64,6 +65,26 @@ async def app(tmp_path_factory):
             class Meta:
                 permissions = PUBLIC
 
+        class Summary(BaseModel):  # docs/guides/dropping-down.md: replacing a schema
+            id: int
+            name: str
+
+        class Profile(Model):
+            __module__ = "blog.models"
+            name: str = Field(max_length=100)
+            bio: str = ""
+
+            class Meta:
+                read_schema = Summary
+                permissions = PUBLIC
+
+        class Card(Model):
+            __module__ = "blog.models"
+            profile: Profile = ForeignKey(on_delete="cascade")
+
+            class Meta:
+                permissions = PUBLIC
+
         class Review(Model):
             __module__ = "blog.models"
             author: Author = ForeignKey(on_delete="restrict")
@@ -90,7 +111,7 @@ async def client(app):
         await conn.execute(
             text(
                 "TRUNCATE auth_user, auth_session, blog_author, blog_secret, blog_post, "
-                "blog_review RESTART IDENTITY"
+                "blog_review, blog_profile, blog_card RESTART IDENTITY"
             )
         )
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -273,3 +294,15 @@ async def test_openapi_shows_expand(client):
     assert "author" not in expanded.get("required", [])
     params = {p["name"] for p in spec["paths"]["/api/blog/post"]["get"]["parameters"]}
     assert "expand" in params
+
+
+# --- replaced read schema (docs/guides/dropping-down.md) -------------------
+
+
+async def test_replaced_read_schema_shapes_responses_and_expand(client):
+    response = await client.post("/api/blog/profile", json={"name": "ana", "bio": "hidden"})
+    assert response.status_code == 201
+    assert response.json() == {"id": 1, "name": "ana"}
+    await client.post("/api/blog/card", json={"profile_id": 1})
+    card = (await client.get("/api/blog/card/1", params={"expand": "profile"})).json()
+    assert card["profile"] == {"id": 1, "name": "ana"}

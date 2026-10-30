@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from support import MigratedSchema
 
 import fyro.db
@@ -59,6 +59,12 @@ async def app(tmp_path_factory):
         @custom.get("/post/stats")
         async def post_stats():
             return {"posts": await Post.objects.count()}
+
+        @custom.get("/raw/published")
+        async def raw_published(db: fyro.db.DBSession):
+            # Plain SQLAlchemy on the request's session: same transaction as Post.objects.
+            stmt = select(func.count()).select_from(Post).where(Post.published.is_(True))
+            return {"published": await db.scalar(stmt)}
 
         @custom.get("/missing")
         async def missing():
@@ -252,6 +258,23 @@ async def test_custom_route_is_mounted_before_crud(client):
     response = await client.get("/api/blog/post/stats")
     assert response.status_code == 200
     assert response.json() == {"posts": 2}
+
+
+async def test_raw_sqlalchemy_through_db_session_dependency(client):
+    await seed(client, 3)
+    await client.patch("/api/blog/post/2", json={"published": True})
+    response = await client.get("/api/blog/raw/published")
+    assert response.status_code == 200
+    assert response.json() == {"published": 1}
+
+
+async def test_current_session_is_the_request_session(client):
+    async with fyro.db.session():
+        outer = fyro.db.current_session()
+        async with fyro.db.session():
+            assert fyro.db.current_session() is outer
+    with pytest.raises(RuntimeError, match=r"async with fyro\.db\.session\(\)"):
+        fyro.db.current_session()
 
 
 async def test_does_not_exist_in_hand_written_route_is_404(client):

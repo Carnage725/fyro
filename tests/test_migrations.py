@@ -590,3 +590,64 @@ def test_plain_id_column_becomes_foreign_key_and_orphans_follow_on_delete(
     assert re.search(r"blog_post\.author_id.*missing blog_author", caplog.text)
     migrations.migrate()
     assert run_sql(DB_URL, "SELECT title, author_id FROM blog_post ORDER BY title") == expected
+
+
+# --- renames (phase 15) ----------------------------------------------------
+
+
+def renamed(project, new_field, answer):
+    """Migrate POST with two rows, replace `author: str = ...` and makemigrations, answering
+    every rename question with `answer`. Returns (path, questions asked)."""
+    _, write_models = project
+    migrations.makemigrations()
+    migrations.migrate()
+    run_sql(
+        DB_URL,
+        "INSERT INTO blog_post (title, slug, author) VALUES ('a', 'a', 'x'), ('b', 'b', 'y')",
+    )
+    write_models(POST.replace("author: str = Field(index=True)", new_field))
+    asked = []
+
+    def ask(table, old, new):
+        asked.append((table, old, new))
+        return answer
+
+    return migrations.makemigrations(ask_rename=ask), asked
+
+
+def test_rename_answered_yes_keeps_data_and_downgrades(project):
+    path, asked = renamed(project, "writer: str = Field(index=True)", True)
+    assert asked == [("blog_post", "author", "writer")]
+    source = path.read_text()
+    assert "new_column_name='writer'" in source
+    assert "drop_column" not in source
+    migrations.migrate()
+    assert run_sql(DB_URL, "SELECT writer FROM blog_post ORDER BY writer") == [("x",), ("y",)]
+    assert migrations.makemigrations() is None
+    (initial,) = [f for f in revision_files(project[0]) if f.name.endswith("_initial.py")]
+    first = initial.name.split("-")[1].split("_")[0]
+    migrations.migrate(first)
+    assert run_sql(DB_URL, "SELECT author FROM blog_post ORDER BY author") == [("x",), ("y",)]
+
+
+def test_rename_with_different_nullability_is_not_asked(project, caplog):
+    with caplog.at_level(logging.WARNING, logger="fyro.migrations"):
+        path, asked = renamed(project, "writer: str | None = None", True)
+    # different nullability: not a rename candidate, never asked
+    assert asked == []
+    assert "op.drop_column('blog_post', 'author')" in path.read_text()
+    assert re.search(r"blog_post.*author.*writer", caplog.text)
+
+
+def test_rename_declined_keeps_drop_plus_add(project):
+    root, _ = project
+    # a required column with no default: dropping + adding it is refused, as before
+    with pytest.raises(ImproperlyConfigured, match=r"Post\.writer"):
+        renamed(project, "writer: str = Field(index=True)", False)
+    assert len(revision_files(root)) == 1
+
+
+def test_rename_of_different_type_is_not_asked(project):
+    path, asked = renamed(project, "writer: int | None = None", True)
+    assert asked == []
+    assert "drop_column" in path.read_text()

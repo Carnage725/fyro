@@ -10,6 +10,7 @@ import importlib
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,50 @@ def _current_revision() -> str | None:
             await engine.dispose()
 
     return asyncio.run(read())
+
+
+def _shape(column: Column) -> tuple[str, bool]:
+    return str(column.type.compile(dialect=postgresql.dialect())), bool(column.nullable)
+
+
+def _apply_renames(directive: Any, ask: Callable[[str, str, str], bool]) -> None:
+    """Turn a dropped + added column of the same type and nullability into a rename when
+    `ask(table, old, new)` says yes, in the upgrade and (reversed) in the downgrade."""
+    downgrades = {
+        t.table_name: t for t in directive.downgrade_ops.ops if isinstance(t, ops.ModifyTableOps)
+    }
+    for table_ops in directive.upgrade_ops.ops:
+        if not isinstance(table_ops, ops.ModifyTableOps):
+            continue
+        table = table_ops.table_name
+        drops = {op.column_name: op for op in table_ops.ops if isinstance(op, ops.DropColumnOp)}
+        for add in [op for op in table_ops.ops if isinstance(op, ops.AddColumnOp)]:
+            new = add.column.name
+            old = next(
+                (
+                    name
+                    for name, drop in drops.items()
+                    if _shape(drop.to_column()) == _shape(add.column) and ask(table, name, new)
+                ),
+                None,
+            )
+            if old is None:
+                continue
+            column = drops.pop(old).to_column()
+            existing = {"existing_type": column.type, "existing_nullable": column.nullable}
+            table_ops.ops = [
+                ops.AlterColumnOp(table, old, modify_name=new, **existing) if op is add else op
+                for op in table_ops.ops
+                if not (isinstance(op, ops.DropColumnOp) and op.column_name == old)
+            ]
+            down = downgrades[table]
+            down.ops = [
+                ops.AlterColumnOp(table, new, modify_name=old, **existing)
+                if isinstance(op, ops.AddColumnOp) and op.column.name == old
+                else op
+                for op in down.ops
+                if not (isinstance(op, ops.DropColumnOp) and op.column_name == new)
+            ]
 
 
 def _warn_renames(upgrade_ops: ops.UpgradeOps) -> None:
@@ -262,8 +307,14 @@ def _fill_nulls(model: Any, alter: ops.AlterColumnOp) -> list[Any]:
     ]
 
 
-def makemigrations(message: str | None = None) -> Path | None:
-    """Write a revision for model changes. Returns its path, or None when nothing changed."""
+def makemigrations(
+    message: str | None = None, ask_rename: Callable[[str, str, str], bool] | None = None
+) -> Path | None:
+    """Write a revision for model changes. Returns its path, or None when nothing changed.
+
+    `ask_rename(table, old, new)` is asked when a table drops a column and adds one of the same
+    type and nullability; True writes a rename (data kept) instead of drop + add.
+    """
     _ensure_sync()
     directory = _migrations_dir()
     directory.mkdir(exist_ok=True)
@@ -280,6 +331,8 @@ def makemigrations(message: str | None = None) -> Path | None:
         if upgrade_ops.is_empty():
             directives[:] = []
         else:
+            if ask_rename is not None:
+                _apply_renames(directives[0], ask_rename)
             _warn_renames(upgrade_ops)
             _fill_existing_rows(upgrade_ops)
 

@@ -39,6 +39,7 @@ nav:
       - Models: guides/models.md
       - Querying: guides/querying.md
       - The automatic API: guides/api.md
+      - Dropping down: guides/dropping-down.md
       - Migrations: guides/migrations.md
       - Command line: guides/cli.md
       - Auth and permissions: guides/auth.md

@@ -123,7 +123,7 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 3. Implement. Verify: tests pass, and `metadata.create_all` against Docker Postgres creates the constraint and index.
 4. **Gate (human):** show the north-star `Post` DDL and the JSON schema of its three schemas.
 
-**Out of scope:** queries on relations (Phase 11), API (Phase 12), many-to-many (Phase 15).
+**Out of scope:** queries on relations (Phase 11), API (Phase 12), many-to-many (Phase 16).
 
 ---
 
@@ -145,7 +145,7 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 1. Write failing tests, including one that counts queries for `select_related` over 50 rows. Verify: they fail.
 2. Implement. Verify: tests pass; the 50-row test runs 2 queries or fewer.
 
-**Out of scope:** lookups across links (`author__username`, Phase 16), reverse access (`user.posts`).
+**Out of scope:** lookups across links (`author__username`, Phase 17), reverse access (`user.posts`).
 
 ---
 
@@ -201,14 +201,31 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 
 ---
 
-## Phase 15: `ManyToMany`
+## Phase 15: Escape hatches
+
+**Goal:** dropping down to plain FastAPI and SQLAlchemy is natural, and a renamed field keeps its data. (From an outside review: "opinionated by default, flexible by choice".)
+
+**Public API**
+- `fyro.db.current_session() -> AsyncSession`: the request's (or `fyro.db.session()`'s) SQLAlchemy session, for raw queries. Outside a session: the existing clear error.
+- `fyro.db.DBSession`: the same as a FastAPI dependency, `async def stats(db: DBSession)`.
+- `makemigrations` asks about renames. When a table loses one column and gains another of the same type and nullability, the CLI asks `Was blog_post.author renamed to writer? [y/N]`. Yes writes `ALTER TABLE ... RENAME COLUMN` (data kept, and the downgrade renames back); no keeps drop + add with the existing warning. `--noinput`, or no terminal, never asks. In Python: `migrations.makemigrations(ask_rename=callable)`.
+- A guide page, "Dropping down": raw SQLAlchemy with the session, custom routes in `routes.py`, replacing generated schemas, `Meta.api = False`.
+
+**Steps and checks**
+1. Session: failing tests for `current_session()` and `DBSession` in a hand-written route, then implement. Verify: tests pass.
+2. Renames: failing tests (rename kept with data, downgrade renames back, "no" keeps drop + add, different types never asked, no `ask_rename` never asks, a required column renamed is not refused), then implement. Verify: tests pass, and the CLI end-to-end test still passes.
+3. Docs page in `docs/guides/`, added to `mkdocs.yml`. Verify: every code sample on it runs in a test.
+
+---
+
+## Phase 16: `ManyToMany`
 
 **Goal:** `tags: list[Tag] = ManyToMany()` end to end: model, queries, API, migrations, admin.
 
 **Behavior**
 - Join table `<table>_<field>` (e.g. `blog_post_tags`) with columns `<model>_id`, `<target>_id`, both the primary key, both `ON DELETE CASCADE`. Not a Model; fyro owns it.
 - Schemas: `Create`/`Update`/`Read` contain `tag_ids: list[int]`. On update, `tag_ids` replaces the whole set. Unknown ids: 422 naming them.
-- Queries: `prefetch_related("tags")`, `filter(tags=tag)`, `filter(tag_ids=...)` is not supported until `__in` (Phase 16).
+- Queries: `prefetch_related("tags")`, `filter(tags=tag)`, `filter(tag_ids=...)` is not supported until `__in` (Phase 17).
 - API: `?expand=tags`. Reading `tag_ids` in a list costs one extra query for the whole page.
 - Migrations: the join table is created and dropped with the field.
 - Admin: multi-select (search box over 100 rows).
@@ -221,7 +238,7 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 
 ---
 
-## Phase 16: Lookups
+## Phase 17: Lookups
 
 **Goal:** filters beyond "equals", and one hop across a link.
 

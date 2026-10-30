@@ -232,7 +232,9 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
         for link in expand:
             target = getattr(obj, link)
             expanded[link] = (
-                None if target is None else expandable[link].Read.model_validate(target)
+                None
+                if target is None
+                else expandable[link].Read.model_validate(target, from_attributes=True)
             )
         return Out.model_construct(**dict(item), **expanded)
 

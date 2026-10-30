@@ -200,6 +200,15 @@ def _quiet(verbose: bool) -> Iterator[None]:
         logger.setLevel(level)
 
 
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _ask_rename(table: str, old: str, new: str) -> bool:
+    # stderr: _quiet() swallows stdout while Alembic runs.
+    return typer.confirm(f"Was {table}.{old} renamed to {new}?", default=False, err=True)
+
+
 def _database_state() -> str:
     current = migrations._current_revision()
     return f"Database is at {current}" if current else "Database is at zero (empty)"
@@ -264,11 +273,15 @@ def startapp(name: str) -> None:
 def makemigrations(
     message: Annotated[str | None, typer.Option("-m", "--message")] = None,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
+    noinput: Annotated[
+        bool, typer.Option("--noinput", help="Never ask about renamed fields.")
+    ] = False,
 ) -> None:
     """Write a migration file for model changes."""
     _load_project()
+    ask = None if noinput or not _interactive() else _ask_rename
     with _quiet(verbose):
-        path = migrations.makemigrations(message)
+        path = migrations.makemigrations(message, ask_rename=ask)
     if path is None:
         typer.echo("No changes detected")
     else:
