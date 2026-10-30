@@ -32,39 +32,49 @@ def _violated(error: IntegrityError) -> str | None:
     return getattr(error.orig.__cause__, "constraint_name", None)
 
 
-def _conflict(model: Any, error: IntegrityError, values: dict[str, Any]) -> HTTPException:
-    """409 for a unique violation, 422 for a link to a missing row, naming the field;
-    re-raise anything else."""
-    if getattr(error.orig, "sqlstate", None) != FOREIGN_KEY_VIOLATION:
-        return HTTPException(409, unique_violation(model, error)[1])
-    for constraint in model.__table__.foreign_key_constraints:
-        if constraint.name == _violated(error):
-            (column,) = constraint.columns
-            target = next(
-                rel.mapper.class_
-                for rel in model.__mapper__.relationships
-                if column in rel.local_columns
-            )
-            return HTTPException(
-                422, f"{column.key}: no {target.__name__} with id {values.get(column.key)!r}."
-            )
+def is_missing_target(error: IntegrityError) -> bool:
+    return getattr(error.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION
+
+
+def missing_target(model: Any, error: IntegrityError, values: dict[str, Any]) -> tuple[str, str]:
+    """Field and message for a ForeignKey pointing at a missing row; re-raise anything else."""
+    if is_missing_target(error):
+        for constraint in model.__table__.foreign_key_constraints:
+            if constraint.name == _violated(error):
+                (column,) = constraint.columns
+                target = next(
+                    rel.mapper.class_
+                    for rel in model.__mapper__.relationships
+                    if column in rel.local_columns
+                )
+                return (
+                    column.key,
+                    f"{column.key}: no {target.__name__} with id {values.get(column.key)!r}.",
+                )
     raise error
 
 
-def _still_linked(model: Any, error: IntegrityError) -> HTTPException:
-    """409 for deleting a row that on_delete="restrict" links still point at."""
-    if getattr(error.orig, "sqlstate", None) != FOREIGN_KEY_VIOLATION:
-        raise error
-    for app in apps.registry.apps.values():
-        for source in app.models.values():
-            for link, id_field in source.__fyro_links__.items():
-                (constraint,) = source.__table__.c[id_field].foreign_keys
-                if constraint.constraint.name == _violated(error):
-                    return HTTPException(
-                        409,
-                        f"This {model.__name__} is still linked from {source.__name__}.{link} "
-                        '(on_delete="restrict"). Delete or change those rows first.',
-                    )
+def _conflict(model: Any, error: IntegrityError, values: dict[str, Any]) -> HTTPException:
+    """409 for a unique violation, 422 for a link to a missing row, naming the field;
+    re-raise anything else."""
+    if is_missing_target(error):
+        return HTTPException(422, missing_target(model, error, values)[1])
+    return HTTPException(409, unique_violation(model, error)[1])
+
+
+def still_linked(model: Any, error: IntegrityError) -> str:
+    """Message for deleting a row that on_delete="restrict" links still point at; re-raise
+    anything else."""
+    if is_missing_target(error):
+        for app in apps.registry.apps.values():
+            for source in app.models.values():
+                for link, id_field in source.__fyro_links__.items():
+                    (key,) = source.__table__.c[id_field].foreign_keys
+                    if key.constraint.name == _violated(error):
+                        return (
+                            f"This {model.__name__} is still linked from {source.__name__}.{link} "
+                            '(on_delete="restrict"). Delete or change those rows first.'
+                        )
     raise error
 
 
@@ -271,7 +281,7 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
         try:
             deleted = await model.objects.filter(**{pk: pk_value}).delete()
         except IntegrityError as error:
-            raise _still_linked(model, error) from error
+            raise HTTPException(409, still_linked(model, error)) from error
         if not deleted:
             raise model.DoesNotExist(f"No {name} matches { ({pk: pk_value}) }.")
         return Response(status_code=204)

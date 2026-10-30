@@ -27,7 +27,7 @@
           {% for row in rows %}
             <tr>
               <td class="check"><input type="checkbox" name="ids" value="{{ row.pk }}" aria-label="Select row {{ row.pk }}"></td>
-              {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+              {% for text, href in row.cells %}<td>{% if href %}<a href="{{ href }}">{{ text }}</a>{% else %}{{ text }}{% endif %}</td>{% endfor %}
               <td class="actions"><a href="{{ entry.url }}/{{ row.pk }}">Edit</a></td>
             </tr>
           {% else %}
@@ -49,9 +49,9 @@
   {% if filters %}
     <aside class="filters">
       <h3>Filter</h3>
-      {% for name, choices in filters %}
+      {% for name, title, choices in filters %}
         <div class="filter">
-          <div class="muted">{{ name|replace("_", " ")|capitalize }}</div>
+          <div class="muted">{{ title }}</div>
           <a class="{% if name not in active %}on{% endif %}" href="{{ url(**{name: None, 'page': 1}) }}">Any</a>
           {% for value, text in choices %}
             <a class="{% if active.get(name) == value %}on{% endif %}" href="{{ url(**{name: value, 'page': 1}) }}">{{ text }}</a>

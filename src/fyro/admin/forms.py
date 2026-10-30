@@ -16,7 +16,8 @@ from fyro.models.fields import MISSING
 class FormField:
     name: str
     label: str
-    widget: str  # text | textarea | checkbox | number | date | datetime-local | select | password
+    # text | textarea | checkbox | number | date | datetime-local | select | password | link
+    widget: str
     value: str = ""
     checked: bool = False
     options: list[tuple[str, str]] = field(default_factory=list)
@@ -24,10 +25,25 @@ class FormField:
     readonly: bool = False
     help: str = ""
     error: str = ""
+    search_url: str = ""  # link widget with too many rows for a dropdown
 
 
 def label(name: str) -> str:
     return name.replace("_", " ").capitalize()
+
+
+def field_label(model: Any, name: str) -> str:
+    """A field's label; a ForeignKey's id field is labelled by the link (author_id: Author)."""
+    links = {id_field: link for link, id_field in model.__fyro_links__.items()}
+    return label(links.get(name, name))
+
+
+def row_label(row: Any) -> str:
+    """A row as text: its __str__ if the model defines one, else "<Model> #<pk>"."""
+    if type(row).__str__ is not object.__str__:
+        return str(row)
+    pk = next(iter(type(row).__table__.primary_key.columns)).key
+    return f"{type(row).__name__} #{getattr(row, pk)}"
 
 
 def widget_for(tp: Any, info: Any) -> str:
@@ -79,13 +95,14 @@ def build_fields(
     for name, info in model.__fyro_fields__.items():
         if name in schema.model_fields:
             tp, nullable = _unwrap_optional(schema.model_fields[name].annotation)
-            widget = widget_for(tp, info)
+            # Options for links are filled by the admin routes, which can query.
+            widget = "link" if name in model.__fyro_links__.values() else widget_for(tp, info)
             current = getattr(instance, name) if instance is not None else None
             if instance is None and info.default is not MISSING:
                 current = info.default
             form_field = FormField(
                 name=name,
-                label=label(name),
+                label=field_label(model, name),
                 widget=widget,
                 value="" if info.write_only else as_input(current),
                 checked=bool(current) if widget == "checkbox" else False,
@@ -104,7 +121,7 @@ def build_fields(
             fields.append(
                 FormField(
                     name=name,
-                    label=label(name),
+                    label=field_label(model, name),
                     widget="text",
                     value=display(getattr(instance, name)),
                     readonly=True,

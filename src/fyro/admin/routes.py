@@ -16,11 +16,19 @@ from sqlalchemy.exc import IntegrityError
 
 from fyro import apps
 from fyro.admin import forms
-from fyro.crud import list_query, unique_violation
+from fyro.crud import (
+    is_missing_target,
+    list_query,
+    missing_target,
+    still_linked,
+    unique_violation,
+)
+from fyro.db.session import current_session
 from fyro.models.base import _snake, _unwrap_optional
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 PAGE_SIZE = 50
+PICKER_LIMIT = 100  # more target rows than this: a search box instead of a full dropdown
 # Strict CSP: no eval, no inline styles or scripts. 409/422 bodies are swapped so forms can
 # show their errors; other 4xx/5xx are not.
 HTMX_CONFIG = json.dumps(
@@ -139,6 +147,42 @@ def pk_name(entry: Entry) -> str:
     return next(iter(entry.model.__table__.primary_key.columns)).key
 
 
+def link_targets(model: Any) -> dict[str, Any]:
+    """ForeignKey id field -> target model, e.g. {"author_id": Author}."""
+    return {
+        id_field: model.__mapper__.relationships[link].mapper.class_
+        for link, id_field in model.__fyro_links__.items()
+    }
+
+
+def target_pk(target: Any) -> Any:
+    return next(iter(target.__table__.primary_key.columns))
+
+
+async def fill_links(entry: Entry, fields: list[forms.FormField]) -> list[forms.FormField]:
+    """Options for link fields: every target row, or only the current one plus a search box."""
+    targets = link_targets(entry.model)
+    for form_field in fields:
+        if form_field.widget != "link":
+            continue
+        target = targets[form_field.name]
+        pk = target_pk(target)
+        blank = [("", "—")] if entry.model.__table__.c[form_field.name].nullable else []
+        if await target.objects.count() <= PICKER_LIMIT:
+            rows = await target.objects.order_by(pk.key).all()
+        else:
+            form_field.search_url = f"{entry.url}/link-options/{form_field.name}"
+            try:
+                current = pk.type.python_type(form_field.value) if form_field.value else None
+            except (TypeError, ValueError):
+                current = None
+            rows = [] if current is None else await target.objects.filter(**{pk.key: current}).all()
+        form_field.options = blank + [
+            (forms.as_input(getattr(row, pk.key)), forms.row_label(row)) for row in rows
+        ]
+    return fields
+
+
 async def get_row(entry: Entry, pk: Any) -> Any:
     row = await entry.model.objects.filter(**{pk_name(entry): pk}).first()
     if row is None:
@@ -220,16 +264,38 @@ async def list_page(
     search, order_by = params.get("search", ""), params.get("order_by", "")
     page = max(int(params.get("page", "1")) if params.get("page", "").isdigit() else 1, 1)
     filters, active = {}, {}
+    sidebar = []
     for name, choices in filter_options(entry):
+        sidebar.append((name, forms.field_label(entry.model, name), choices))
         value = params.get(name)
         if value in {v for v, _ in choices}:
             active[name] = value
             filters[name] = value == "true" if choices[0][0] == "true" else value
+    # ?author_id=5 filters by a linked row; list cells link there.
+    targets = link_targets(entry.model)
+    for name, target in targets.items():
+        pk = target_pk(target)
+        try:
+            value = pk.type.python_type(params[name])
+        except (KeyError, TypeError, ValueError):
+            continue
+        linked = await target.objects.filter(**{pk.key: value}).first()
+        if linked is not None and name in entry.model.Read.model_fields:
+            active[name] = params[name]
+            filters[name] = value
+            label = forms.row_label(linked)
+            sidebar.append((name, forms.field_label(entry.model, name), [(params[name], label)]))
+    shown_links = {
+        id_field: link
+        for link, id_field in entry.model.__fyro_links__.items()
+        if id_field in entry.model.__fyro_list_display__
+    }
     try:
         qs = list_query(entry.model, filters, search or None, order_by or None)
     except ValueError:
         order_by = ""
         qs = list_query(entry.model, filters, search or None)
+    qs = qs.select_related(*shown_links.values())
     total = await qs.count()
     rows = await qs.limit(PAGE_SIZE).offset((page - 1) * PAGE_SIZE).all()
     state = {"search": search, "order_by": order_by, **active}
@@ -245,13 +311,27 @@ async def list_page(
         flipped = name if order_by != name else f"-{name}"
         arrow = " ↑" if order_by == name else " ↓" if order_by == f"-{name}" else ""
         columns.append(
-            {"label": forms.label(name), "sort_url": url(order_by=flipped, page=1), "arrow": arrow}
+            {
+                "label": forms.field_label(entry.model, name),
+                "sort_url": url(order_by=flipped, page=1),
+                "arrow": arrow,
+            }
         )
     pk = pk_name(entry)
+
+    def cell(row: Any, name: str) -> tuple[str, str]:
+        """(text, link): a linked row shows its label and links to rows sharing it."""
+        if name not in shown_links:
+            return forms.display(getattr(row, name)), ""
+        linked = getattr(row, shown_links[name])
+        if linked is None:
+            return "—", ""
+        return forms.row_label(linked), f"{entry.url}?{urlencode({name: getattr(row, name)})}"
+
     table = [
         {
             "pk": getattr(row, pk),
-            "cells": [forms.display(getattr(row, n)) for n in entry.model.__fyro_list_display__],
+            "cells": [cell(row, n) for n in entry.model.__fyro_list_display__],
         }
         for row in rows
     ]
@@ -269,7 +349,7 @@ async def list_page(
         search=search,
         url=url,
         active=active,
-        filters=filter_options(entry),
+        filters=sidebar,
         keep=[(k, v) for k, v in state.items() if k != "search" and v],
         searchable=bool(entry.model.__fyro_search_fields__),
     )
@@ -283,13 +363,13 @@ async def add_page(request: Request, app_label: str, segment: str, user: Superus
         "form.html",
         user,
         entry=entry,
-        fields=add_fields(entry),
+        fields=await add_fields(entry),
         action=f"{entry.url}/add",
         title=f"Add {entry.model.__name__}",
     )
 
 
-def add_fields(
+async def add_fields(
     entry: Entry, errors: dict[str, str] | None = None, form: Any = None
 ) -> list[forms.FormField]:
     fields = forms.build_fields(entry.model, entry.model.Create)
@@ -300,10 +380,10 @@ def add_fields(
                 name="password2", label="Password (again)", widget="password", required=True
             ),
         ]
-    return with_errors(fields, errors or {}, form)
+    return await fill_links(entry, with_errors(fields, errors or {}, form))
 
 
-def edit_fields(
+async def edit_fields(
     entry: Entry, row: Any, errors: dict[str, str] | None = None, form: Any = None
 ) -> list[forms.FormField]:
     fields = forms.build_fields(entry.model, entry.model.Update, row, editing=True)
@@ -316,7 +396,7 @@ def edit_fields(
                 help="Leave blank to keep the current password. Changing it logs the user out everywhere.",
             )
         )
-    return with_errors(fields, errors or {}, form)
+    return await fill_links(entry, with_errors(fields, errors or {}, form))
 
 
 def with_errors(
@@ -351,24 +431,31 @@ async def add(request: Request, app_label: str, segment: str, user: Superuser) -
     status = 422
     if not errors:
         try:
-            await entry.model.objects.create(**values)
+            # A savepoint: after a failed write the form below can still query link options.
+            async with current_session().begin_nested():
+                await entry.model.objects.create(**values)
             return redirect(entry.url)
         except IntegrityError as error:
-            status, errors = conflict_errors(entry, error)
+            status, errors = conflict_errors(entry, error, values)
     return render(
         request,
         "form.html",
         user,
         status=status,
         entry=entry,
-        fields=add_fields(entry, errors, form),
+        fields=await add_fields(entry, errors, form),
         action=f"{entry.url}/add",
         title=f"Add {entry.model.__name__}",
         error=errors.get("__all__", ""),
     )
 
 
-def conflict_errors(entry: Entry, error: IntegrityError) -> tuple[int, dict[str, str]]:
+def conflict_errors(
+    entry: Entry, error: IntegrityError, values: dict[str, Any]
+) -> tuple[int, dict[str, str]]:
+    if is_missing_target(error):
+        field, message = missing_target(entry.model, error, values)
+        return 422, {field: message}
     columns, message = unique_violation(entry.model, error)
     return 409, {(columns[0] if len(columns) == 1 else "__all__"): message}
 
@@ -387,8 +474,15 @@ async def bulk_delete(request: Request, app_label: str, segment: str, user: Supe
         return confirm(request, user, entry, rows, status=422, error="You cannot delete yourself.")
     if form.get("confirm", [""])[0] != "yes" or not rows:
         return confirm(request, user, entry, rows)
-    for row in rows:
-        await entry.model.objects.filter(**{pk_name(entry): getattr(row, pk_name(entry))}).delete()
+    try:
+        for row in rows:
+            await entry.model.objects.filter(
+                **{pk_name(entry): getattr(row, pk_name(entry))}
+            ).delete()
+    except IntegrityError as error:  # 409: the request rolls back, so nothing is deleted
+        return confirm(
+            request, user, entry, rows, status=409, error=still_linked(entry.model, error)
+        )
     return redirect(entry.url)
 
 
@@ -421,7 +515,7 @@ async def edit_page(
         "form.html",
         user,
         entry=entry,
-        fields=edit_fields(entry, row),
+        fields=await edit_fields(entry, row),
         action=f"{entry.url}/{pk}",
         title=f"Edit {entry.model.__name__} {pk}",
         delete_url=f"{entry.url}/{pk}/delete",
@@ -451,21 +545,22 @@ async def edit(
     if not errors:
         try:
             if values:
-                await entry.model.objects.filter(**{pk_name(entry): pk_value}).update(**values)
+                async with current_session().begin_nested():  # see add()
+                    await entry.model.objects.filter(**{pk_name(entry): pk_value}).update(**values)
             if ends_sessions:
                 from fyro.auth.sessions import end_user_sessions
 
                 await end_user_sessions(pk_value)
             return redirect(entry.url)
         except IntegrityError as error:
-            status, errors = conflict_errors(entry, error)
+            status, errors = conflict_errors(entry, error, values)
     return render(
         request,
         "form.html",
         user,
         status=status,
         entry=entry,
-        fields=edit_fields(entry, row, errors, form),
+        fields=await edit_fields(entry, row, errors, form),
         action=f"{entry.url}/{pk}",
         title=f"Edit {entry.model.__name__} {pk}",
         delete_url=f"{entry.url}/{pk}/delete",
@@ -491,5 +586,39 @@ async def delete(
     row = await get_row(entry, pk_value)
     if entry.is_user and pk_value == user.id:
         return confirm(request, user, entry, [row], status=422, error="You cannot delete yourself.")
-    await entry.model.objects.filter(**{pk_name(entry): pk_value}).delete()
+    try:
+        await entry.model.objects.filter(**{pk_name(entry): pk_value}).delete()
+    except IntegrityError as error:
+        return confirm(
+            request, user, entry, [row], status=409, error=still_linked(entry.model, error)
+        )
     return redirect(entry.url)
+
+
+@router.get("/{app_label}/{segment}/link-options/{field}")
+async def link_options(
+    request: Request, app_label: str, segment: str, field: str, user: Superuser
+) -> HTMLResponse:
+    """<option>s for a link field's search box: target rows matching ?_search=, or its id."""
+    entry = find_entry(app_label, segment)
+    target = link_targets(entry.model).get(field)
+    if target is None:
+        raise HTTPException(404, "Not found.")
+    pk = target_pk(target)
+    term = request.query_params.get("_search", "").strip()
+    rows = await list_query(target, {}, term or None).limit(PICKER_LIMIT).all()
+    try:
+        by_id = await target.objects.filter(**{pk.key: pk.type.python_type(term)}).first()
+    except (TypeError, ValueError):
+        by_id = None
+    if by_id is not None and all(getattr(r, pk.key) != getattr(by_id, pk.key) for r in rows):
+        rows.insert(0, by_id)
+    blank = [("", "—")] if entry.model.__table__.c[field].nullable else []
+    return TEMPLATES.TemplateResponse(
+        request,
+        "link_options.html",
+        {
+            "options": blank
+            + [(forms.as_input(getattr(r, pk.key)), forms.row_label(r)) for r in rows]
+        },
+    )
