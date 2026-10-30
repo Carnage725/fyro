@@ -1,12 +1,17 @@
 # fyro: Build Plan
 
-> **Status: FINAL (v0.1 plan).** Phases 0 to 9 are built and their gates passed (plus the Phase 6.1 fix). Each phase is detailed in `BUILD_PROMPT.md`.
+> **Status: DRAFT (v0.2 plan: relations).** v0.1 (Phases 0 to 9) is built. Its plan lives in git history. Phases here continue the numbering at 10, and each is detailed in `BUILD_PROMPT.md` only after the previous phase's gate passes.
 
 ## Goal
 
-A Django-feeling framework on top of FastAPI. One model class produces the table, the schemas, the API and the admin.
+Models can point at each other. A post has an author, a post has many tags. One model class still produces the table, the schemas, the API and the admin, now including the links.
 
-**Success test:** a developer writes one model class, runs one command, and gets a working table, an API with docs and an admin page. It takes under 10 minutes, with no glue code and no decisions about where files go.
+**Success test:** a developer adds `author: User = ForeignKey(on_delete="cascade")` and `tags: list[Tag] = ManyToMany()` to a model, runs `makemigrations` and `migrate`, and gets:
+- the right columns, join table and constraints in Postgres,
+- an API that accepts `author_id` and `tag_ids` and returns them, plus `?expand=author,tags` for the full objects,
+- an admin with a dropdown for the author and a multi-select for the tags,
+
+with no glue code, and with listing 50 posts with `?expand=author,tags` costing a fixed number of queries (not one per post).
 
 ## Locked decisions
 
@@ -14,11 +19,11 @@ A Django-feeling framework on top of FastAPI. One model class produces the table
 |---|---|
 | Package name | `fyro` |
 | Stack | Python 3.12+, uv, FastAPI, Pydantic v2, pydantic-settings, SQLAlchemy 2 async + asyncpg, Alembic, Typer (CLI), Jinja2 + HTMX (admin) |
-| Database | Postgres only. No relations until v0.2. |
+| Database | Postgres only. |
 | Settings | Project `settings.py` holds a `fyro.Settings` subclass. Env vars and `.env` (prefix `FYRO_`) override. |
 | List env vars | `list[str]` settings accept JSON (`'["a","b"]'`) or comma-separated (`a,b`) |
 | Secret key | Required with no default. `fyro new` writes `FYRO_SECRET_KEY=fyro-insecure-<random>` to a gitignored `.env`. An insecure key gives a warning when `debug=True` and an error when `debug=False`. |
-| URLs | All API under `/api`: auto CRUD at `/api/<app>/<model>`, custom app routes at `/api/<app>/...`. Admin at `/admin`, docs at `/docs`. No `/v1` in v0.1. A duplicate method+path is a startup error. |
+| URLs | All API under `/api`: auto CRUD at `/api/<app>/<model>`, custom app routes at `/api/<app>/...`. Admin at `/admin`, docs at `/docs`. No `/v1`. A duplicate method+path is a startup error. |
 | Finding settings | `FYRO_SETTINGS=myproject.settings` env var, written into generated `manage.py` / `asgi.py` |
 | App layout | `models.py` required. `routes.py` and `admin.py` optional. |
 | Field syntax | Typed annotations: `title: str = Field(max_length=200)` |
@@ -29,200 +34,212 @@ A Django-feeling framework on top of FastAPI. One model class produces the table
 | Escape hatch | `Meta` tweaks (`create_exclude`, `read_exclude`, `update_exclude`) plus full replace (`create_schema`, `read_schema`, `update_schema`) |
 | Query API | Django-style async manager: `await Post.objects.filter(title="x").all()`. Session comes from a request-scoped contextvar. |
 | Engine seam | The manager only calls `engine.fetch(stmt) -> list` (rows/scalars) and `engine.execute(stmt) -> int` (rowcount), so the database layer can be swapped without changing the public API. |
-| Update schema | Strict: every field defaults to `None`, but the annotation stays `T`. An explicit `null` on a NOT NULL column is rejected. (Phase 3 gate) |
-| Defaults | Scalar defaults are Python-side only (`mapped_column(default=...)`). No `server_default`. (Phase 3 gate) |
-| New NOT NULL columns | `makemigrations` never writes a migration that fails on a table with rows. A constant default is added as a temporary database default and then dropped (Django's approach). `uuid4`, `datetime.now` and `date.today` factories fill old rows with `gen_random_uuid()`, `now()` or `CURRENT_DATE` (add nullable, fill, set NOT NULL). No default, or any other factory, is refused with an error. (Phase 6.1 fix) |
-| Enums | Stored as VARCHAR(255) holding the member value (`native_enum=False`), not Postgres `ENUM` types. No CHECK constraint; Pydantic validates. (Phase 6 decision) |
-| Migration files | Hidden `env.py` inside fyro; Alembic hex revision ids with date-prefixed file names; one `migrate(target)` that moves up or down, `"zero"` = empty. (Phase 6 decision) |
-| Not found | `create_app()` turns `fyro.db.DoesNotExist` into a 404 on every route, including hand-written ones. (Phase 4 gate) |
+| Update schema | Strict: every field defaults to `None`, but the annotation stays `T`. An explicit `null` on a NOT NULL column is rejected. |
+| Defaults | Scalar defaults are Python-side only (`mapped_column(default=...)`). No `server_default`. |
+| New NOT NULL columns | `makemigrations` never writes a migration that fails on a table with rows. A constant default is added as a temporary database default and then dropped (Django's approach). `uuid4`, `datetime.now` and `date.today` factories fill old rows with `gen_random_uuid()`, `now()` or `CURRENT_DATE` (add nullable, fill, set NOT NULL). No default, or any other factory, is refused with an error. |
+| Enums | Stored as VARCHAR(255) holding the member value (`native_enum=False`), not Postgres `ENUM` types. No CHECK constraint; Pydantic validates. |
+| Migration files | Hidden `env.py` inside fyro; Alembic hex revision ids with date-prefixed file names; one `migrate(target)` that moves up or down, `"zero"` = empty. |
+| Not found | `create_app()` turns `fyro.db.DoesNotExist` into a 404 on every route, including hand-written ones. |
 | Migrations | One Alembic history in `<project>/migrations/`, wrapped by `makemigrations` / `migrate` |
 | Test DB | `docker compose` Postgres |
 | Plan depth | Each phase is detailed in `BUILD_PROMPT.md` only after the previous phase's gate passes. |
+| **Relation syntax** | Django style. `author: User = ForeignKey(on_delete=...)` creates column `author_id`. `tags: list[Tag] = ManyToMany()` creates a join table. (v0.2 decision) |
+| **Relations in the API** | Ids by default (`author_id`, `tag_ids`). `?expand=author,tags` adds the full objects, one level deep. (v0.2 decision) |
+| **Relations engine** | SQLAlchemy `ForeignKey` + `relationship()`. fyro writes them; it does not build its own relation layer. (v0.2 decision) |
+| **No hidden queries** | Relationships use `lazy="raise"`. Reading `post.author` without loading it first is a clear fyro error that says how to load it, never a silent extra query. Async SQLAlchemy cannot lazy-load anyway. (v0.2 decision) |
+| **on_delete** | Required on every `ForeignKey`, like Django. `"cascade"`, `"set_null"` (field must be `T \| None`) or `"restrict"`. Enforced by Postgres (`ON DELETE ...`), so bulk deletes and raw SQL obey it too. (v0.2 decision) |
 
 ## North star: the user experience we are building toward
 
-```
-myproject/
-  manage.py            # sets FYRO_SETTINGS, calls fyro CLI
-  .env                 # FYRO_SECRET_KEY etc., gitignored
-  asgi.py              # app = fyro.create_app()
-  myproject/
-    settings.py
-  migrations/
-  blog/
-    __init__.py
-    models.py
-    routes.py          # optional
-    admin.py           # optional
-```
-
 ```python
 # blog/models.py
-from fyro import Model, Field
+from fyro import Model, Field, ForeignKey, ManyToMany
+from fyro.auth.models import User
+
+class Tag(Model):
+    name: str = Field(max_length=50, unique=True)
 
 class Post(Model):
     title: str = Field(max_length=200)
-    body: str
-    secret: str = Field(write_only=True)
-    published: bool = False
+    author: User = ForeignKey(on_delete="cascade")
+    editor: User | None = ForeignKey(on_delete="set_null", default=None)
+    tags: list[Tag] = ManyToMany()
 ```
 
-Results: table `blog_post`, plus `Post.Create`, `Post.Read`, `Post.Update`, plus CRUD at `/api/blog/post` and an admin page.
+Database: `blog_post` gets `author_id BIGINT NOT NULL REFERENCES auth_user ON DELETE CASCADE` (indexed) and `editor_id` (nullable, `ON DELETE SET NULL`). A join table `blog_post_tags (post_id, tag_id)` with both columns as the primary key and `ON DELETE CASCADE` on both.
 
-## fyro package layout (target)
+API:
 
 ```
-src/fyro/
-  __init__.py      # public API: Settings, Model, Field, create_app
-  conf.py          # Settings base + get_settings()
-  apps.py          # app loader + registry
-  models/
-    fields.py      # Field(), FieldInfo with flags
-    base.py        # Model base, class-creation hook
-    schemas.py     # Create/Read/Update generation
-  app.py           # create_app()
-tests/
-docker-compose.yml
-pyproject.toml
+POST /api/blog/post   {"title": "Hi", "author_id": 5, "tag_ids": [1, 2]}
+GET  /api/blog/post/1                      -> {"id": 1, "title": "Hi", "author_id": 5, "editor_id": null, "tag_ids": [1, 2]}
+GET  /api/blog/post/1?expand=author,tags   -> same, plus "author": {...User.Read...}, "tags": [{...Tag.Read...}, ...]
+GET  /api/blog/post?author_id=5            -> posts by user 5
 ```
 
----
-
-## Phase 0: Foundations
-
-**Goal:** an empty, tested, lintable package.
-
-1. `pyproject.toml` (uv, src layout, Python >= 3.12) with dependencies listed. Verify: `uv sync` succeeds.
-2. `docker-compose.yml` with Postgres 16 and a healthcheck. Verify: `docker compose up -d` shows healthy.
-3. pytest + pytest-asyncio + ruff configured, plus one smoke test (`import fyro`). Verify: `uv run pytest` and `uv run ruff check` both pass.
-
-**Out of scope:** CI, docs site, publishing.
-
----
-
-## Phase 1: Typed settings
-
-**Goal:** one settings class that everything reads from.
-
-**Public API**
+Python:
 
 ```python
-from fyro import Settings
-class ProjectSettings(Settings):
-    database_url: str = "postgresql+asyncpg://..."
-    installed_apps: list[str] = ["blog"]
+post = await Post.objects.select_related("author").get(id=1)
+post.author.username                       # loaded, no query
+post.author_id                             # always there, no loading needed
+
+posts = await Post.objects.prefetch_related("tags").all()
+[t.name for t in posts[0].tags]            # loaded with one extra query for all posts
+await Post.objects.filter(author_id=5).all()
+await Post.objects.filter(author=user).all()
+
+post = await Post.objects.get(id=1)
+post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select_related('author')."
 ```
 
-`fyro.conf.get_settings()` returns the cached instance.
+## Rules for every phase
 
-**Base fields:** `database_url` (must use the `postgresql+asyncpg` scheme), `secret_key` (required, no default), `debug: bool = False`, `installed_apps: list[str] = []`.
-
-**Config:** `env_prefix="FYRO_"`, `env_file=".env"`.
-
-**Rules enforced by code**
-- `FYRO_SETTINGS` unset gives a clear error that names the variable.
-- The module must define exactly one `Settings` subclass. Zero or more than one is an error.
-- A non-Postgres URL is an error at load time.
-- Env vars `FYRO_<FIELD>` and `.env` override file values.
-- `list[str]` fields from env: a value starting with `[` is parsed as JSON. Any other value is split on commas and stripped. This uses pydantic-settings `NoDecode` + `BeforeValidator`.
-- Insecure `secret_key` (starts with `fyro-insecure-` or is shorter than 50 characters): `warnings.warn` when `debug=True`, error when `debug=False`. This follows Django's `security.W009` and the FastAPI full-stack template's `changethis` check.
-
-**Steps and checks**
-1. Write tests first: load from module, env override, `.env` override, missing env var, wrong scheme, two subclasses, missing `secret_key`, list parsing (JSON and comma), insecure key with warning in debug and error in non-debug. Verify: the tests fail.
-2. Implement `conf.py`. Verify: the tests pass.
-
-**Out of scope:** per-environment settings files and secrets managers.
+- A link target must be a Model class that is already defined (imported). A target that is a string, a self-reference (`parent: "Category"`) or a circular import is an error that names the field and says it comes later.
+- Every relation error names the model and field and says how to fix it, like v0.1.
+- `read_only` and `write_only` on `ForeignKey(...)` apply to its `author_id` field. `Meta.*_exclude` names the id field (`"author_id"`).
+- Expanding a target uses the target's own `Read` schema, so `write_only` fields (like `User.password`) never leak. Expanding also checks the target's read permission level for the caller; a caller who may not read `User` gets a 403 for `?expand=author`.
+- Query count is tested. A list with `expand` must run a fixed number of queries, whatever the page size.
 
 ---
 
-## Phase 2: App loader (the skeleton)
+## Phase 10: `ForeignKey` on the model
 
-**Goal:** read `installed_apps`, discover each app's modules, and build a FastAPI app.
+**Goal:** `author: User = ForeignKey(on_delete="cascade")` gives the right table and schemas.
 
-**Public API:** `fyro.create_app() -> FastAPI` and `fyro.apps.registry` (read-only view of loaded apps and models).
+**Public API:** `fyro.ForeignKey(*, on_delete, default=MISSING, read_only=False, write_only=False, description=None)`.
 
 **Behavior**
-- Import `<app>.models` for each installed app. It is required, and a missing module gives an error naming the app and file.
-- Import `<app>.routes` if present. It must expose `router: APIRouter`, which is mounted at `/api/<app_label>`.
-- `admin.py` is only recorded in phase 2 and used in phase 9.
-- App label = last segment of the dotted path (`fyro.auth` gives `auth`). Duplicate labels are an error.
-- Models register themselves with the registry when defined. A Model defined outside an installed app's `models.py` is an error.
-- Loading happens once. A second call is idempotent.
+- Column `<name>_id`, same type as the target's primary key, NOT NULL unless the annotation is `T | None`. Indexed (Postgres does not index foreign keys by itself; Django does).
+- Constraint name from the existing naming convention (`fk_blog_post_author_id_auth_user`).
+- A `relationship()` named `author` with `lazy="raise"`.
+- Schemas: `Create`/`Update`/`Read` contain `author_id: int` (or `int | None`), not `author`.
+- `on_delete` missing, unknown, or `"set_null"` on a non-nullable field: `TypeError` naming the field.
+- A field named `author_id` next to `author = ForeignKey(...)`: error (name clash).
 
 **Steps and checks**
-1. Create test fixture apps (valid, missing models, routes without `router`, duplicate label). Write failing tests.
-2. Implement `apps.py` + `create_app()`. Verify: the tests pass, and the fixture app's custom route answers through `httpx.AsyncClient`.
+1. **Spike:** prove that `__init_subclass__` can turn `author: User` into a `Mapped[int]` column `author_id` plus a `Mapped[User]` `relationship(lazy="raise")` before SQLAlchemy maps the class. Verify: one throwaway test shows `Post.__table__.c.author_id` with its foreign key, and `Post.author.property` is a relationship. If it fails, stop and report options.
+2. Write failing tests for every behavior above. Verify: they fail.
+3. Implement. Verify: tests pass, and `metadata.create_all` against Docker Postgres creates the constraint and index.
+4. **Gate (human):** show the north-star `Post` DDL and the JSON schema of its three schemas.
 
-**Out of scope:** CRUD routes (phase 5), DB (phase 4).
+**Out of scope:** queries on relations (Phase 11), API (Phase 12), many-to-many (Phase 15).
 
 ---
 
-## Phase 3: The Model class (the heart)
+## Phase 11: Querying with `ForeignKey`
 
-**Goal:** one class gives a SQLAlchemy table plus Create/Read/Update schemas.
+**Goal:** filter by a link and load linked objects without hidden queries.
 
 **Public API**
+- `filter(author_id=5)`, `filter(author=user)`, `exclude(...)` the same way.
+- `QuerySet.select_related(*names)`: loads `ForeignKey` targets in the same request (`selectinload` or `joinedload`, picked at the spike).
+- `create(author=user)` and `create(author_id=5)` both work.
+- Reading an unloaded relation raises a fyro error naming the model, field and the `select_related` call to use.
 
-```python
-from fyro import Model, Field
-
-class Post(Model):
-    title: str = Field(max_length=200)
-    body: str
-    secret: str = Field(write_only=True)
-
-    class Meta:            # optional
-        table_name = "posts"
-        read_exclude = ["body"]
-        create_schema = MyPostCreate
-```
-
-**`Field(...)` arguments (v0.1):** `default`, `default_factory`, `primary_key`, `max_length`, `unique`, `index`, `read_only`, `write_only`, plus Pydantic constraints passed through (`ge`, `le`, `min_length`, `pattern`, `description`).
-
-**Supported types (v0.1):** `int`, `str`, `bool`, `float`, `Decimal`, `datetime`, `date`, `UUID`, `Enum`, and any of these as `T | None` (nullable). Any other type raises `TypeError` at class creation, naming the model and field.
-
-**Schema rules**
-- `Create`: all fields except `read_only`. Required unless they have a default.
-- `Read`: all fields except `write_only`, with `from_attributes=True`.
-- `Update`: `Create`'s fields, all optional with default `None`. Callers use `exclude_unset`.
-- `Meta.*_exclude` removes fields. `Meta.*_schema` replaces the schema entirely.
-- Unknown `Meta` keys or excluded field names that don't exist are errors.
-- `read_only` and `write_only` both set on one field is an error.
-
-**Mechanism (built):** `__init_subclass__` on a `DeclarativeBase` subclass (no metaclass needed). It rewrites plain annotations into `Mapped[T]` + `mapped_column(...)` before SQLAlchemy maps the class. It then generates the schemas with `pydantic.create_model`. It stores the field flags in the registry and leaves room for `.objects` (phase 4).
+**Rules**
+- Unknown names in `select_related` are an error listing the model's relations.
+- Everything still goes through `engine.fetch` / `engine.execute` (the engine seam stays).
 
 **Steps and checks**
-1. **Spike:** prove that plain annotations can be rewritten to `Mapped` before SA mapping, with one throwaway test. Verify: `Post.__table__` has the right columns, types and nullability. If the spike fails, stop and report options.
-2. Write failing tests for every schema rule above, plus table name, auto id and the unsupported-type error.
-3. Implement `fields.py`, `schemas.py`, `base.py`. Verify: the tests pass, and `metadata.create_all` against Docker Postgres creates `blog_post`.
-4. **Magic gate (human):** show the north-star `Post` example, its generated table DDL and the JSON schema of all 3 schemas. The user approves or we iterate. Phase 4 does not start before approval.
+1. Write failing tests, including one that counts queries for `select_related` over 50 rows. Verify: they fail.
+2. Implement. Verify: tests pass; the 50-row test runs 2 queries or fewer.
 
-**Out of scope:** relations, the manager / queries, migrations.
+**Out of scope:** lookups across links (`author__username`, Phase 16), reverse access (`user.posts`).
 
 ---
 
-## Phase 4: Engine, session and `Model.objects` (built)
+## Phase 12: Relations in the auto API
 
-Full spec: `BUILD_PROMPT.md`, Phase 4 prompt. Summary:
-- `Engine` protocol with `fetch(stmt) -> list` and `execute(stmt) -> int`. `SQLAlchemyEngine` is the only implementation.
-- `fyro.db.get_engine()` is lazy and cached. `create_app()` adds a `lifespan` that disposes the engine on shutdown.
-- A pure ASGI middleware opens one session per request in a contextvar. It commits before the response starts and rolls back on exception.
-- `async with fyro.db.session():` for scripts and tests. Nested sessions reuse the outer one.
-- `Model.objects` manager: `filter`, `exclude`, `order_by`, `limit`, `offset`, `all`, `get`, `first`, `count`, `create`, `update`, `delete`. Equality lookups only. Per-model `DoesNotExist` / `MultipleObjectsReturned`.
+**Goal:** the auto CRUD reads and writes links.
+
+**Behavior**
+- `author_id` in request and response bodies, and as a list filter (`?author_id=5`).
+- `?expand=author` on list and get. Comma-separated for several. One level deep only. Unknown names: 422 listing the expandable fields. `expand` joins the reserved list query parameters (a field named `expand` is a startup error, like `limit`).
+- Expanded objects use the target's `Read` schema and the target's read permission.
+- A missing target on create/update (`author_id: 999`): 422 naming the field (`no User with id 999`), not a 500. This maps Postgres foreign key violations (SQLSTATE `23503`).
+- Deleting a row that `restrict` links still point at: 409 naming the linking model.
+- OpenAPI shows `expand` and the expanded schema.
+
+**Steps and checks**
+1. Write failing API tests for each behavior, plus a query-count test for `?expand=author&limit=50`. Verify: they fail.
+2. Implement in `crud.py`. Verify: tests pass.
+3. **Gate (human, demo):** run the north-star app; show the docs page and the JSON for get, list and expand.
 
 ---
 
-## Phases 5 to 9: outline
+## Phase 13: Migrations for `ForeignKey`
 
-5. **Auto CRUD** (detailed in `BUILD_PROMPT.md`): per-model router at `/api/<app>/<model>` with list (field filters, limit/offset, total count), get, create, patch and delete. It shows in OpenAPI and can be opted out of via `Meta.api = False`. A custom route that duplicates a CRUD method+path is a startup error naming both. **This is the demo gate.**
-6. **Migrations**: Alembic, async `env.py`, one history per project, `target_metadata` from the registry. Spike: `Config` without `alembic.ini`. Renames show up as drop + add, and this is documented.
-7. **CLI** (Typer): `new` (also writes `.env` with a `fyro-insecure-` secret key and a `.gitignore` containing `.env`), `startapp`, `runserver` (uvicorn), `makemigrations`, `migrate`. Verify with a scripted end-to-end run of the 10-minute test.
-8. **Auth** (detailed in `BUILD_PROMPT.md`): built-in `fyro.auth` app, `User` model, `createsuperuser` command (moved from Phase 7), Argon2id password hashing, one database-backed opaque session token sent as a cookie or a Bearer header (**no JWT**: revocable logout, decided at Phase 8 planning), baseline CSRF header check for cookie writes, per-model permissions (`Meta.permissions`: read/write × public/authenticated/superuser; default read public, write authenticated).
-9. **Admin** (detailed in `BUILD_PROMPT.md`): at `/admin`, superusers only, HTMX + Jinja2 inside the package (htmx vendored, no CDN), server-rendered through the same query code, schemas and manager as auto CRUD: list, search, sort, bool/enum filters, add, edit, delete, bulk delete, user management. All models appear automatically (`Meta.admin = False` hides one). `?search=` and `?order_by=` join the public API. No relation picker in v0.1 because relations come in v0.2.
+**Goal:** `makemigrations` writes working migrations for links.
 
-## Not building (v0.1)
+**Behavior**
+- New tables with foreign keys are created in dependency order (target first), across apps.
+- Adding a NOT NULL `ForeignKey` to a table with rows follows the locked "New NOT NULL columns" rule: with no default, it is refused with an error that says to add it as `T | None` first, fill it, then make it required.
+- Changing `on_delete` drops and recreates the constraint.
+- `fyro.auth.Session.user_id` becomes `user: User = ForeignKey(on_delete="cascade")`. The migration first deletes sessions whose user no longer exists, then adds the constraint. Logging in then loads the user with one join instead of two queries.
 
-WebSocket admin, OAuth, rate limiting, CSRF extras, background tasks, signals, auto-mocked tests, relations, multiple databases.
+**Steps and checks**
+1. Write failing migration tests: create, add nullable FK to a table with rows, refuse NOT NULL FK without default, change `on_delete`, migrate down to `"zero"`. Verify: they fail.
+2. Implement. Verify: tests pass; the CLI end-to-end test still passes.
+
+---
+
+## Phase 14: `ForeignKey` in the admin
+
+**Goal:** the admin edits links.
+
+**Behavior**
+- Add/edit forms show a dropdown of target rows. Over 100 target rows: a search box that queries the target instead.
+- A row is shown by its `__str__` if the model defines one, otherwise `<Model> #<id>`.
+- List pages show the linked row's label and can filter by it.
+- Admin list pages load labels with `select_related`, never one query per row.
+
+**Steps and checks**
+1. Write failing admin tests (form widget, save, list label, filter, query count). Verify: they fail.
+2. Implement. Verify: tests pass; check the screens in a browser.
+
+---
+
+## Phase 15: `ManyToMany`
+
+**Goal:** `tags: list[Tag] = ManyToMany()` end to end: model, queries, API, migrations, admin.
+
+**Behavior**
+- Join table `<table>_<field>` (e.g. `blog_post_tags`) with columns `<model>_id`, `<target>_id`, both the primary key, both `ON DELETE CASCADE`. Not a Model; fyro owns it.
+- Schemas: `Create`/`Update`/`Read` contain `tag_ids: list[int]`. On update, `tag_ids` replaces the whole set. Unknown ids: 422 naming them.
+- Queries: `prefetch_related("tags")`, `filter(tags=tag)`, `filter(tag_ids=...)` is not supported until `__in` (Phase 16).
+- API: `?expand=tags`. Reading `tag_ids` in a list costs one extra query for the whole page.
+- Migrations: the join table is created and dropped with the field.
+- Admin: multi-select (search box over 100 rows).
+
+**Steps and checks**
+1. **Spike + decision (human):** how Python code changes a set of tags. Options: (a) only through `create(..., tag_ids=[...])` and `update(tag_ids=[...])` on the manager; (b) Django-style `await post.tags.add(tag)` / `.remove()` / `.set()`. Report what each costs, then the user picks.
+2. Write failing tests for each part above. Verify: they fail.
+3. Implement. Verify: tests pass, including query counts.
+4. **Gate (human, demo):** the full north-star app.
+
+---
+
+## Phase 16: Lookups
+
+**Goal:** filters beyond "equals", and one hop across a link.
+
+**Public API:** `__gt`, `__gte`, `__lt`, `__lte`, `__in`, `__isnull`, `__icontains`, and one hop across a `ForeignKey`: `filter(author__username="ana")`. Same names on the API list endpoint (`?created_at__gte=2026-01-01`).
+
+**Rules**
+- Unknown lookup or field: error naming both and listing valid ones.
+- `write_only` fields cannot be filtered with any lookup (they could be probed).
+- The admin bulk delete uses `id__in` (one query instead of two per row).
+
+**Steps and checks**
+1. Write failing tests. Verify: they fail.
+2. Implement. Verify: tests pass.
+
+---
+
+## Not building (v0.2)
+
+String or self-referencing targets (`parent: "Category"`), one-to-one, reverse accessors (`user.posts`), expand deeper than one level, lookups over more than one hop, generic relations, custom user model, plus everything from v0.1's list: WebSocket admin, OAuth, rate limiting, background tasks, signals, other databases.
 
 ## fancy features off the top of my head in the far future
 1. a fancy looking cli???
