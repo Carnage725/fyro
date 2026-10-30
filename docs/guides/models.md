@@ -70,6 +70,53 @@ Every model gets three Pydantic classes:
 - `Post.Read`: all fields except `write_only`, readable from model instances (`from_attributes`).
 - `Post.Update`: the `Create` fields, all optional. An explicit `null` on a required field is rejected; use `model_dump(exclude_unset=True)`.
 
+## Links between models
+
+```python
+from fyro import Field, ForeignKey, ManyToMany, Model
+from fyro.auth.models import User
+
+
+class Tag(Model):
+    name: str = Field(max_length=50, unique=True)
+
+    def __str__(self) -> str:          # how the admin shows a tag
+        return self.name
+
+
+class Post(Model):
+    title: str = Field(max_length=200)
+    author: User = ForeignKey(on_delete="cascade")
+    editor: User | None = ForeignKey(on_delete="set_null", default=None)
+    tags: list[Tag] = ManyToMany()
+```
+
+### `ForeignKey`: one row
+
+`author: User = ForeignKey(on_delete=...)` adds the column **`author_id`** (same type as the target's primary key, indexed, with a foreign key constraint). `post.author` is the linked row, once loaded (see [Querying](querying.md#links)). `User | None` makes the link optional.
+
+`on_delete` is required and enforced by Postgres, so bulk deletes and raw SQL obey it too:
+
+| `on_delete` | Deleting the target row… |
+|---|---|
+| `"cascade"` | deletes the rows that link to it. |
+| `"set_null"` | empties their link. The field must be `Target \| None`. |
+| `"restrict"` | is refused while rows link to it (the API answers `409`). |
+
+`ForeignKey(...)` also takes `default` (an id), `read_only`, `write_only` and `description`. The schemas hold `author_id: int`, and `Meta.*_exclude` names `"author_id"`.
+
+### `ManyToMany`: many rows
+
+`tags: list[Tag] = ManyToMany()` adds no column. fyro creates a join table **`blog_post_tags`** with `post_id` and `tag_id`, both the primary key and both `ON DELETE CASCADE`: deleting a post or a tag removes the link, never the other row.
+
+The schemas hold **`tag_ids: list[int]`**: the field name made singular plus `_ids` (`tags` is `tag_ids`, `categories` is `category_ids`, `staff` is `staff_ids`). `Create` defaults it to `[]`; on `Update` it replaces the whole set. Ids come back sorted.
+
+### Rules
+
+- The target must be a model that is already defined (imported). A model cannot link to itself or to a model defined later in the same file yet.
+- A model as a field type needs `ForeignKey(...)`; `list[Model]` needs `ManyToMany()`. Leaving either out is an error naming the field.
+- `author_id` or `tag_ids` declared next to the link is a name clash, also an error.
+
 ## `Meta`
 
 ```python

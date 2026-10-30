@@ -46,5 +46,5 @@ nav:
       - Admin: guides/admin.md
   - Benchmarks: benchmarks.md
   - Security: security.md
-  - What v0.1 does not do: limitations.md
+  - What v0.2 does not do: limitations.md
   - Releasing (maintainers): releasing.md

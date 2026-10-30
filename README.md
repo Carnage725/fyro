@@ -43,11 +43,11 @@ python manage.py createsuperuser
 python manage.py runserver        # http://127.0.0.1:8000/docs and /admin
 ```
 
-The full walkthrough and the guides are in [`docs/`](docs/index.md): settings, models, querying, the automatic API, migrations, the command line, auth and permissions, the admin, and security notes.
+The full walkthrough and the guides are in [`docs/`](docs/index.md): settings, models and links, querying, the automatic API, dropping down to FastAPI and SQLAlchemy, migrations, the command line, auth and permissions, the admin, and security notes.
 
 ## Status
 
-**v0.1, alpha.** PostgreSQL only. Relations between models come in v0.2; see [what v0.1 does not do](docs/limitations.md). The plan and the history of every design decision are in [`PLAN.md`](PLAN.md) and [`BUILD_PROMPT.md`](BUILD_PROMPT.md).
+**v0.2, alpha.** PostgreSQL only. Links between models (`ForeignKey`, `ManyToMany`) and lookups are in; see [what v0.2 does not do](docs/limitations.md). The plan and the history of every design decision are in [`PLAN.md`](PLAN.md) and [`BUILD_PROMPT.md`](BUILD_PROMPT.md).
 
 ## Development
 

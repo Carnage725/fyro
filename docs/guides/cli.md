@@ -6,7 +6,7 @@
 |---|---|
 | `fyro new <name> [directory]` | Create a project. Refuses to overwrite any existing file. |
 | `startapp <name>` | Create `<name>/models.py`. Prints the line to add to `installed_apps` (it never edits your settings). |
-| `makemigrations [-m message] [-v]` | Write a migration. Prints the file, or `No changes detected`. |
+| `makemigrations [-m message] [-v] [--noinput]` | Write a migration. Prints the file, or `No changes detected`. In a terminal it asks about [renamed fields](migrations.md#renames); `--noinput` never asks. |
 | `migrate [target] [-v]` | Apply migrations (`target`: a revision, `head` or `zero`). |
 | `runserver [--host 127.0.0.1] [--port 8000] [--no-reload]` | Development server with auto-reload. |
 | `createsuperuser [--noinput]` | Create a superuser (needs `fyro.auth`). `--noinput` reads `FYRO_SUPERUSER_USERNAME`, `FYRO_SUPERUSER_EMAIL` and `FYRO_SUPERUSER_PASSWORD` from the environment. |

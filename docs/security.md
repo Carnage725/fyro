@@ -20,13 +20,14 @@
 | Permissions | Checked before the row is looked up: no probing which ids exist. |
 | Input | Validated by the generated schemas; values the database cannot store are a `422`, never a `500`. |
 | SQL | Built by SQLAlchemy with bound parameters; field names are checked against the model before reaching SQL. |
+| Links | `?expand=` uses the target's `Read` schema and read permission, and never expands a model hidden from the API (such as `User`). API filters cover the model's own readable fields only: no lookups across a `ForeignKey`, so a target's fields cannot be probed. |
 | Admin | Superusers only; strict CSP, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`; HTML-escaped values; no third-party scripts or fonts. |
 | Errors | The CLI masks the database password in error messages. |
 
 ## Known limits
 
 - No rate limiting or account lockout.
-- No per-row ownership checks until relations (v0.2): any logged-in user with write access can change any row of that model.
+- No per-row ownership checks yet: any logged-in user with write access can change any row of that model.
 - The login response contains the token for API clients; JavaScript on the page can read it at that moment (it matters only if the site has an XSS hole, which defeats CSRF protection anyway).
 - No password reset, password change endpoint or email verification.
 

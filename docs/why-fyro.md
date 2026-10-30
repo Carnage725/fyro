@@ -100,11 +100,11 @@ fyro doesn't build on top of SQLModel. It uses Pydantic and SQLAlchemy directly 
 Being opinionated means fyro says "no" to some things, on purpose:
 
 - **Postgres only.** No MySQL or SQLite for now.
-- **No relations between models yet.** Foreign keys come in v0.2.
+- **Relations are kept simple.** `ForeignKey` and `ManyToMany`, one level of `?expand=`, no self-referencing links yet.
 - **One way to do things.** If you want to choose every piece yourself, plain FastAPI suits you better.
 - **A little speed.** fyro does extra checking on every request. In the [benchmarks](benchmarks.md) this cost sits within the noise of the measurements, and both async stacks served single-row reads faster than Django and Flask.
 
-The full list is in [What v0.1 does not do](limitations.md).
+The full list is in [What v0.2 does not do](limitations.md).
 
 ## Who fyro is for
 

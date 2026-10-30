@@ -12,7 +12,7 @@ Add `"fyro.auth"` to `installed_apps`, then `makemigrations` and `migrate`. You 
 
 - Passwords are hashed with **Argon2id**.
 - A session is a random token stored in the database only as a SHA-256 hash. Browsers use the cookie; API clients send `Authorization: Bearer <token>`.
-- Sessions end after **14 days**, or after **2 hours without use**. Logout, a password change or deactivating the user ends them immediately.
+- Sessions end after **14 days**, or after **2 hours without use**. Logout, a password change, deactivating the user or deleting it ends them immediately.
 - The cookie is `HttpOnly` and `SameSite=Lax`; outside `debug` it is named `__Host-fyro_session` and is `Secure` (HTTPS only).
 - An unknown user, a wrong password and an inactive user all get the same `401`, in the same time.
 
@@ -56,7 +56,7 @@ class Post(Model):
 - The permission check runs **before** the row is looked up, so a caller who may not see a model gets `401`/`403` even for ids that do not exist; nobody can probe which ids exist.
 
 !!! warning "No ownership checks yet"
-    "authenticated" means any logged-in user may change any row. Per-row ownership needs relations (v0.2). There is no public sign-up: users come from `createsuperuser` or the admin.
+    "authenticated" means any logged-in user may change any row. Per-row ownership (only the author may edit their post) is not built yet. There is no public sign-up: users come from `createsuperuser` or the admin.
 
 ## Users
 
