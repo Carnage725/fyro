@@ -308,3 +308,36 @@ async def test_many_to_many_with_many_targets_searches_and_keeps_selection(clien
     )
     picked = re.findall(r'<option value="([^"]*)"\s*(selected)?', found.text)
     assert picked == [("7", "selected"), ("10", ""), ("100", ""), ("101", "")]
+
+
+# --- bulk delete with __in (phase 17) --------------------------------------
+
+
+async def test_bulk_delete_queries_do_not_grow_with_rows(client):
+    async def statements_for(count):
+        await sql("DELETE FROM blog_tag")
+        await sql(
+            f"INSERT INTO blog_tag (name) SELECT 't' || n FROM generate_series(1, {count}) AS n"
+        )
+        ids = [str(i) for (i,) in await sql("SELECT id FROM blog_tag")]
+        with count_selects() as selects:
+            ask = await client.post("/admin/blog/tag/bulk-delete", data={"ids": ids}, headers=HX)
+        assert f"{count} tags" in ask.text.lower()
+        deleted: list[str] = []
+
+        def record(conn, cursor, statement, *args):
+            if statement.lstrip().upper().startswith("DELETE"):
+                deleted.append(statement)
+
+        engine = fyro.db.get_engine().sync_engine
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            data = {"ids": ids, "confirm": "yes"}
+            done = await client.post("/admin/blog/tag/bulk-delete", data=data, headers=HX)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert done.headers["hx-redirect"] == "/admin/blog/tag"
+        assert await sql("SELECT count(*) FROM blog_tag") == [(0,)]
+        return len(selects), len(deleted)
+
+    assert await statements_for(2) == await statements_for(25)

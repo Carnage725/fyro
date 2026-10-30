@@ -1,6 +1,8 @@
 import re
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Annotated, Any, get_args, get_origin
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import create_model
@@ -8,7 +10,10 @@ from sqlalchemy.exc import IntegrityError
 
 from fyro import apps
 from fyro.conf import ImproperlyConfigured
-from fyro.models.base import _storable_text
+from fyro.models.base import StorableText, _storable_text, _unwrap_optional
+from fyro.models.manager import COMPARISONS
+
+ORDERED = (int, float, Decimal, date, datetime)  # types with __gt/__gte/__lt/__lte filters
 
 UNIQUE_VIOLATION = "23505"  # Postgres SQLSTATE
 FOREIGN_KEY_VIOLATION = "23503"
@@ -99,6 +104,41 @@ def _field_type(info: Any) -> Any:
     return Annotated[info.annotation, *info.metadata] if info.metadata else info.annotation
 
 
+def _filter_params(model: Any, Read: Any) -> dict[str, Any]:
+    """List query parameters: each readable field and its lookups (`views__gt`, `id__in`,
+    `title__icontains`, `price__isnull`), plus `tags` / `tags__in` per ManyToMany.
+
+    Only the model's own readable fields: write_only fields are not in Read, so they can't be
+    probed, and lookups across a ForeignKey (`author__email`) are Python-only for the same
+    reason: they would expose fields of the target, which may be hidden from the API.
+    """
+    params: dict[str, Any] = {}
+    for field, info in Read.model_fields.items():
+        if field not in model.__fyro_fields__:
+            continue
+        tp = _field_type(info)
+        base, nullable = _unwrap_optional(info.annotation)
+        if get_origin(base) is Annotated:
+            base = get_args(base)[0]
+        item = StorableText if base is str else base
+        params[field] = (tp | None, None)
+        if base is not bool:
+            params[f"{field}__in"] = (list[item] | None, None)
+        if base in ORDERED:
+            params |= {f"{field}__{lookup}": (tp | None, None) for lookup in COMPARISONS}
+        if base is str:
+            params[f"{field}__icontains"] = (StorableText | None, None)
+        if nullable:
+            params[f"{field}__isnull"] = (bool | None, None)
+    for name, ids in model.__fyro_many__.items():
+        if ids in Read.model_fields:
+            target = model.__mapper__.relationships[name].mapper.class_
+            pk_type = next(iter(target.__table__.primary_key.columns)).type.python_type
+            params[name] = (pk_type | None, None)
+            params[f"{name}__in"] = (list[pk_type] | None, None)
+    return params
+
+
 def readable_fields(model: Any) -> list[str]:
     return [field for field in model.Read.model_fields if field in model.__fyro_fields__]
 
@@ -170,15 +210,7 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
     pk_type = _field_type(pk_info) if pk_info else primary_key[0].type.python_type
     PkParam = Annotated[pk_type, Path(alias=pk)]
     Read, Create, Update = model.Read, model.Create, model.Update
-    # write_only fields are not in Read, so they never become filters and can't be probed.
-    Filters = create_model(
-        f"{name}Filters",
-        **{
-            field: (_field_type(info) | None, None)
-            for field, info in Read.model_fields.items()
-            if field in model.__fyro_fields__
-        },
-    )
+    Filters = create_model(f"{name}Filters", **_filter_params(model, Read))
     # ?expand= links: the id field is readable. A target hidden from the API (Meta.api =
     # False, like fyro.auth's User) is never expanded: its Read schema was not made public.
     many = model.__fyro_many__

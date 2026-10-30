@@ -242,7 +242,7 @@ post.author    # fyro error: "Post.author is not loaded. Use Post.objects.select
 
 **Goal:** filters beyond "equals", and one hop across a link.
 
-**Public API:** `__gt`, `__gte`, `__lt`, `__lte`, `__in`, `__isnull`, `__icontains`, and one hop across a `ForeignKey`: `filter(author__username="ana")`. Same names on the API list endpoint (`?created_at__gte=2026-01-01`).
+**Public API:** `__gt`, `__gte`, `__lt`, `__lte`, `__in`, `__isnull`, `__icontains` (plus `__exact`), one hop across a `ForeignKey` (`filter(author__username="ana")`, `author__name__icontains=`), `author__in=[...]`, and `tags=` / `tags__in=` on a `ManyToMany`. The API list endpoint gets the same names on the model's own readable fields and its ManyToManys (`?created_at__gte=2026-01-01`, `?id__in=1&id__in=3`, `?tags=2`), typed per field: comparisons on numbers and dates, `icontains` on text, `isnull` on optional fields. Lookups across a ForeignKey are Python-only: on the API they would let anyone probe the target's fields, including models hidden from the API. `exclude()` keeps rows whose column is NULL, like Django.
 
 **Rules**
 - Unknown lookup or field: error naming both and listing valid ones.

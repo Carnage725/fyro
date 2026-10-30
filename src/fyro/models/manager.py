@@ -1,11 +1,25 @@
+import operator
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import delete, false, func, insert, or_, select, update
+from sqlalchemy import String, delete, false, func, insert, or_, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from fyro.db import engine
+
+LOOKUPS = ("exact", "gt", "gte", "lt", "lte", "in", "isnull", "icontains")
+COMPARISONS = {
+    "gt": operator.gt,
+    "gte": operator.ge,
+    "lt": operator.lt,
+    "lte": operator.le,
+}
+
+
+def _escape_like(term: str) -> str:
+    """`term` for LIKE with backslash escapes: % and _ match literally."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @dataclass(frozen=True)
@@ -56,45 +70,78 @@ class QuerySet:
                 plain[name] = value
         return plain, linked
 
-    def _has(self, name: str, value: Any) -> Any:
-        """Rows linked to `value` through the ManyToMany `name` (an EXISTS subquery)."""
-        relation = getattr(self.model, name)
-        target_pk = next(iter(relation.property.mapper.class_.__table__.primary_key.columns))
-        return relation.any(target_pk == self._target_id(name, value))
-
-    def _lookups(self, lookups: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        many = {n: lookups.pop(n) for n in list(lookups) if n in self.model.__fyro_many__}
-        plain, ids = self._resolve(lookups)
-        if ids:
-            name = next(iter(ids))
+    def _condition(self, key: str, value: Any) -> tuple[Any, bool]:
+        """`name`, `name__lookup`, `link__field` or `link__field__lookup` as a SQL condition.
+        Returns (condition, plain): plain is a column equality, which exclude() negates with
+        IS DISTINCT FROM."""
+        where = f"{self.model.__name__}.{key}"
+        name, *rest = key.split("__")
+        links, many = self.model.__fyro_links__, self.model.__fyro_many__
+        if name in many:
+            if rest not in ([], ["in"]):
+                raise TypeError(f"{where}: a ManyToMany takes `{name}=` or `{name}__in=`.")
+            relation = getattr(self.model, name)
+            pk = next(iter(relation.property.mapper.class_.__table__.primary_key.columns))
+            if rest:
+                return relation.any(pk.in_([self._target_id(name, v) for v in value])), False
+            return relation.any(pk == self._target_id(name, value)), False
+        if name in links and rest and rest[0] not in LOOKUPS:
+            if len(rest) > 2:
+                raise TypeError(
+                    f"{where}: lookups cross one ForeignKey at most, e.g. author__name__icontains."
+                )
+            target = self.model.__mapper__.relationships[name].mapper.class_
+            inner, _ = QuerySet(target)._condition("__".join(rest), value)
+            return getattr(self.model, name).has(inner), False
+        lookup = rest[0] if rest else "exact"
+        if len(rest) > 1 or lookup not in LOOKUPS:
             raise TypeError(
-                f"{self.model.__name__}.{self.model.__fyro_many__[name]}: filter a ManyToMany "
-                f"by one row with `{name}=`."
+                f"{where}: unknown lookup {'__'.join(rest)!r}. Lookups: {', '.join(LOOKUPS)}."
             )
-        return plain, many
+        if name in links:  # author=user, author__in=[...]: compare author_id
+            if lookup == "in":
+                value = [self._target_id(name, v) for v in value]
+            elif lookup != "isnull":
+                value = self._target_id(name, value)
+            name = links[name]
+        column = self._column(name)
+        if lookup == "exact":
+            return (column.is_(None) if value is None else column == value), True
+        if lookup == "in":
+            return column.in_(list(value)), False
+        if lookup == "isnull":
+            return (column.is_(None) if value else column.is_not(None)), False
+        if lookup == "icontains":
+            if not isinstance(column.type, String):
+                raise TypeError(f"{where}: icontains needs a text field.")
+            return column.ilike(f"%{_escape_like(value)}%", escape="\\"), False
+        return COMPARISONS[lookup](column, value), False
 
     def filter(self, **lookups: Any) -> "QuerySet":
-        plain, many = self._lookups(lookups)
-        conditions = tuple(
-            self._column(name).is_(None) if value is None else self._column(name) == value
-            for name, value in plain.items()
-        ) + tuple(self._has(name, value) for name, value in many.items())
+        """Rows matching every lookup: `title="x"`, `views__gt=10`, `author__name="ana"`."""
+        conditions = tuple(self._condition(key, value)[0] for key, value in lookups.items())
         return replace(self, where=self.where + conditions)
 
     def exclude(self, **lookups: Any) -> "QuerySet":
+        """Rows not matching all the lookups. Like Django, rows where a lookup's column is NULL
+        (so the comparison is unknown) are kept."""
         if not lookups:
             return self
-        plain, many = self._lookups(lookups)
-        # IS DISTINCT FROM keeps NULL rows, like Django's exclude().
-        condition = or_(
-            *(self._column(name).is_distinct_from(value) for name, value in plain.items()),
-            *(~self._has(name, value) for name, value in many.items()),
-        )
-        return replace(self, where=(*self.where, condition))
+        negated = []
+        for key, value in lookups.items():
+            condition, plain = self._condition(key, value)
+            if plain:  # column == value: IS DISTINCT FROM keeps NULL rows
+                column, other = condition.left, condition.right
+                negated.append(
+                    column.is_not(None) if value is None else column.is_distinct_from(other)
+                )
+            else:
+                negated.append(~func.coalesce(condition, false()))
+        return replace(self, where=(*self.where, or_(*negated)))
 
     def search(self, term: str, fields: Iterable[str]) -> "QuerySet":
         """Rows where any of `fields` contains `term`, case-insensitively (% and _ literal)."""
-        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = _escape_like(term)
         conditions = [self._column(name).ilike(f"%{escaped}%", escape="\\") for name in fields]
         condition = or_(*conditions) if conditions else false()  # no text fields: no match
         return replace(self, where=(*self.where, condition))

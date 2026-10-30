@@ -492,20 +492,14 @@ async def bulk_delete(request: Request, app_label: str, segment: str, user: Supe
     entry = find_entry(app_label, segment)
     form = await form_data(request)
     pks = [parse_pk(entry, raw) for raw in form.get("ids", [])]
-    rows = [
-        row
-        for pk in pks
-        if (row := await entry.model.objects.filter(**{pk_name(entry): pk}).first())
-    ]
+    picked = entry.model.objects.filter(**{f"{pk_name(entry)}__in": pks})
+    rows = await picked.order_by(pk_name(entry)).all()
     if entry.is_user and user.id in pks:
         return confirm(request, user, entry, rows, status=422, error="You cannot delete yourself.")
     if form.get("confirm", [""])[0] != "yes" or not rows:
         return confirm(request, user, entry, rows)
     try:
-        for row in rows:
-            await entry.model.objects.filter(
-                **{pk_name(entry): getattr(row, pk_name(entry))}
-            ).delete()
+        await picked.delete()
     except IntegrityError as error:  # 409: the request rolls back, so nothing is deleted
         return confirm(
             request, user, entry, rows, status=409, error=still_linked(entry.model, error)
