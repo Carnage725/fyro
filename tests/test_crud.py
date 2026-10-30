@@ -265,5 +265,7 @@ async def test_openapi_lists_crud_routes_and_schemas(app):
     paths = spec["paths"]
     assert set(paths["/api/blog/post"]) == {"get", "post"}
     assert set(paths["/api/blog/post/{id}"]) == {"get", "patch", "delete"}
-    assert {"PostCreate", "PostRead", "PostUpdate", "PostPage"} <= set(spec["components"]["schemas"])
+    assert {"PostCreate", "PostRead", "PostUpdate", "PostPage"} <= set(
+        spec["components"]["schemas"]
+    )
     assert paths["/api/blog/post"]["get"]["tags"] == ["blog.post"]

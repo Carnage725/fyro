@@ -273,9 +273,7 @@ def test_unknown_meta_key_is_error():
 
 def test_read_only_and_write_only_conflict():
     with pytest.raises(TypeError, match=r"Post\.secret"):
-        define_post(
-            __annotations__={"secret": str}, secret=Field(read_only=True, write_only=True)
-        )
+        define_post(__annotations__={"secret": str}, secret=Field(read_only=True, write_only=True))
 
 
 # --- registry --------------------------------------------------------------

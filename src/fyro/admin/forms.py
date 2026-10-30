@@ -90,16 +90,24 @@ def build_fields(
                 value="" if info.write_only else as_input(current),
                 checked=bool(current) if widget == "checkbox" else False,
                 options=[(str(m.value), m.name.title()) for m in tp] if widget == "select" else [],
-                required=not editing and not nullable and widget != "checkbox"
-                and info.default is MISSING and info.default_factory is None,
-                help="Leave blank to keep the current value." if editing and info.write_only else "",
+                required=not editing
+                and not nullable
+                and widget != "checkbox"
+                and info.default is MISSING
+                and info.default_factory is None,
+                help="Leave blank to keep the current value."
+                if editing and info.write_only
+                else "",
             )
             fields.append(form_field)
         elif instance is not None and info.read_only and not info.write_only:
             fields.append(
                 FormField(
-                    name=name, label=label(name), widget="text",
-                    value=display(getattr(instance, name)), readonly=True,
+                    name=name,
+                    label=label(name),
+                    widget="text",
+                    value=display(getattr(instance, name)),
+                    readonly=True,
                 )
             )
     return fields

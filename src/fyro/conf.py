@@ -21,9 +21,7 @@ class Settings(BaseSettings):
     # enable_decoding=False is the class-wide NoDecode: env strings reach
     # _parse_list_fields raw, so list[str] fields re-declared in subclasses
     # still accept both JSON and comma-separated values.
-    model_config = SettingsConfigDict(
-        env_prefix="FYRO_", env_file=".env", enable_decoding=False
-    )
+    model_config = SettingsConfigDict(env_prefix="FYRO_", env_file=".env", enable_decoding=False)
 
     database_url: str
     secret_key: str

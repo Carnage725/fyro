@@ -82,7 +82,9 @@ def find_entry(app_label: str, segment: str) -> Entry:
     raise HTTPException(404, "Not found.")
 
 
-def render(request: Request, template: str, user: Any, status: int = 200, **context: Any) -> HTMLResponse:
+def render(
+    request: Request, template: str, user: Any, status: int = 200, **context: Any
+) -> HTMLResponse:
     nav: dict[str, list[Entry]] = {}
     for entry in entries():
         nav.setdefault(entry.app_label, []).append(entry)
@@ -162,7 +164,12 @@ async def login(request: Request) -> Response:
     user = await authenticate(username, password)
     if user is None:
         return render(
-            request, "login.html", None, status=401, next=next_url, username=username,
+            request,
+            "login.html",
+            None,
+            status=401,
+            next=next_url,
+            username=username,
             error="Invalid username or password.",
         )
     token, _ = await create_session(user)
@@ -237,55 +244,84 @@ async def list_page(
     for name in entry.model.__fyro_list_display__:
         flipped = name if order_by != name else f"-{name}"
         arrow = " ↑" if order_by == name else " ↓" if order_by == f"-{name}" else ""
-        columns.append({"label": forms.label(name), "sort_url": url(order_by=flipped, page=1), "arrow": arrow})
+        columns.append(
+            {"label": forms.label(name), "sort_url": url(order_by=flipped, page=1), "arrow": arrow}
+        )
     pk = pk_name(entry)
     table = [
-        {"pk": getattr(row, pk), "cells": [forms.display(getattr(row, n)) for n in entry.model.__fyro_list_display__]}
+        {
+            "pk": getattr(row, pk),
+            "cells": [forms.display(getattr(row, n)) for n in entry.model.__fyro_list_display__],
+        }
         for row in rows
     ]
     pages = max(math.ceil(total / PAGE_SIZE), 1)
     return render(
-        request, "list.html", user, entry=entry, columns=columns, rows=table, total=total,
-        page=page, pages=pages, search=search, url=url, active=active,
-        filters=filter_options(entry), keep=[(k, v) for k, v in state.items() if k != "search" and v],
+        request,
+        "list.html",
+        user,
+        entry=entry,
+        columns=columns,
+        rows=table,
+        total=total,
+        page=page,
+        pages=pages,
+        search=search,
+        url=url,
+        active=active,
+        filters=filter_options(entry),
+        keep=[(k, v) for k, v in state.items() if k != "search" and v],
         searchable=bool(entry.model.__fyro_search_fields__),
     )
 
 
 @router.get("/{app_label}/{segment}/add")
-async def add_page(
-    request: Request, app_label: str, segment: str, user: Superuser
-) -> HTMLResponse:
+async def add_page(request: Request, app_label: str, segment: str, user: Superuser) -> HTMLResponse:
     entry = find_entry(app_label, segment)
     return render(
-        request, "form.html", user, entry=entry,
-        fields=add_fields(entry), action=f"{entry.url}/add", title=f"Add {entry.model.__name__}",
+        request,
+        "form.html",
+        user,
+        entry=entry,
+        fields=add_fields(entry),
+        action=f"{entry.url}/add",
+        title=f"Add {entry.model.__name__}",
     )
 
 
-def add_fields(entry: Entry, errors: dict[str, str] | None = None, form: Any = None) -> list[forms.FormField]:
+def add_fields(
+    entry: Entry, errors: dict[str, str] | None = None, form: Any = None
+) -> list[forms.FormField]:
     fields = forms.build_fields(entry.model, entry.model.Create)
     if entry.is_user:
         fields += [
             forms.FormField(name="password", label="Password", widget="password", required=True),
-            forms.FormField(name="password2", label="Password (again)", widget="password", required=True),
+            forms.FormField(
+                name="password2", label="Password (again)", widget="password", required=True
+            ),
         ]
     return with_errors(fields, errors or {}, form)
 
 
-def edit_fields(entry: Entry, row: Any, errors: dict[str, str] | None = None, form: Any = None) -> list[forms.FormField]:
+def edit_fields(
+    entry: Entry, row: Any, errors: dict[str, str] | None = None, form: Any = None
+) -> list[forms.FormField]:
     fields = forms.build_fields(entry.model, entry.model.Update, row, editing=True)
     if entry.is_user:
         fields.append(
             forms.FormField(
-                name="new_password", label="New password", widget="password",
+                name="new_password",
+                label="New password",
+                widget="password",
                 help="Leave blank to keep the current password. Changing it logs the user out everywhere.",
             )
         )
     return with_errors(fields, errors or {}, form)
 
 
-def with_errors(fields: list[forms.FormField], errors: dict[str, str], form: Any) -> list[forms.FormField]:
+def with_errors(
+    fields: list[forms.FormField], errors: dict[str, str], form: Any
+) -> list[forms.FormField]:
     """Attach errors and keep what the user typed (except passwords)."""
     for form_field in fields:
         form_field.error = errors.get(form_field.name, "")
@@ -298,9 +334,7 @@ def with_errors(fields: list[forms.FormField], errors: dict[str, str], form: Any
 
 
 @router.post("/{app_label}/{segment}/add")
-async def add(
-    request: Request, app_label: str, segment: str, user: Superuser
-) -> Response:
+async def add(request: Request, app_label: str, segment: str, user: Superuser) -> Response:
     entry = find_entry(app_label, segment)
     form = await form_data(request)
     values, errors = forms.parse(entry.model, entry.model.Create, form, editing=False)
@@ -322,9 +356,15 @@ async def add(
         except IntegrityError as error:
             status, errors = conflict_errors(entry, error)
     return render(
-        request, "form.html", user, status=status, entry=entry,
-        fields=add_fields(entry, errors, form), action=f"{entry.url}/add",
-        title=f"Add {entry.model.__name__}", error=errors.get("__all__", ""),
+        request,
+        "form.html",
+        user,
+        status=status,
+        entry=entry,
+        fields=add_fields(entry, errors, form),
+        action=f"{entry.url}/add",
+        title=f"Add {entry.model.__name__}",
+        error=errors.get("__all__", ""),
     )
 
 
@@ -334,13 +374,15 @@ def conflict_errors(entry: Entry, error: IntegrityError) -> tuple[int, dict[str,
 
 
 @router.post("/{app_label}/{segment}/bulk-delete")
-async def bulk_delete(
-    request: Request, app_label: str, segment: str, user: Superuser
-) -> Response:
+async def bulk_delete(request: Request, app_label: str, segment: str, user: Superuser) -> Response:
     entry = find_entry(app_label, segment)
     form = await form_data(request)
     pks = [parse_pk(entry, raw) for raw in form.get("ids", [])]
-    rows = [row for pk in pks if (row := await entry.model.objects.filter(**{pk_name(entry): pk}).first())]
+    rows = [
+        row
+        for pk in pks
+        if (row := await entry.model.objects.filter(**{pk_name(entry): pk}).first())
+    ]
     if entry.is_user and user.id in pks:
         return confirm(request, user, entry, rows, status=422, error="You cannot delete yourself.")
     if form.get("confirm", [""])[0] != "yes" or not rows:
@@ -350,11 +392,18 @@ async def bulk_delete(
     return redirect(entry.url)
 
 
-def confirm(request: Request, user: Any, entry: Entry, rows: list[Any], status: int = 200, error: str = "") -> HTMLResponse:
+def confirm(
+    request: Request, user: Any, entry: Entry, rows: list[Any], status: int = 200, error: str = ""
+) -> HTMLResponse:
     pk = pk_name(entry)
     shown = entry.model.__fyro_list_display__
     return render(
-        request, "confirm_delete.html", user, status=status, entry=entry, error=error,
+        request,
+        "confirm_delete.html",
+        user,
+        status=status,
+        entry=entry,
+        error=error,
         items=[" · ".join(forms.display(getattr(row, n)) for n in shown) for row in rows],
         ids=[getattr(row, pk) for row in rows],
         action=f"{entry.url}/bulk-delete",
@@ -368,8 +417,13 @@ async def edit_page(
     entry = find_entry(app_label, segment)
     row = await get_row(entry, parse_pk(entry, pk))
     return render(
-        request, "form.html", user, entry=entry, fields=edit_fields(entry, row),
-        action=f"{entry.url}/{pk}", title=f"Edit {entry.model.__name__} {pk}",
+        request,
+        "form.html",
+        user,
+        entry=entry,
+        fields=edit_fields(entry, row),
+        action=f"{entry.url}/{pk}",
+        title=f"Edit {entry.model.__name__} {pk}",
         delete_url=f"{entry.url}/{pk}/delete",
     )
 
@@ -406,9 +460,15 @@ async def edit(
         except IntegrityError as error:
             status, errors = conflict_errors(entry, error)
     return render(
-        request, "form.html", user, status=status, entry=entry,
-        fields=edit_fields(entry, row, errors, form), action=f"{entry.url}/{pk}",
-        title=f"Edit {entry.model.__name__} {pk}", delete_url=f"{entry.url}/{pk}/delete",
+        request,
+        "form.html",
+        user,
+        status=status,
+        entry=entry,
+        fields=edit_fields(entry, row, errors, form),
+        action=f"{entry.url}/{pk}",
+        title=f"Edit {entry.model.__name__} {pk}",
+        delete_url=f"{entry.url}/{pk}/delete",
         error=errors.get("__all__", ""),
     )
 

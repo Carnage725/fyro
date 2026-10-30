@@ -19,9 +19,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 @settings(max_examples=40, deadline=None)
 @given(
-    flags=st.lists(
-        st.sampled_from(["plain", "read_only", "write_only"]), min_size=1, max_size=6
-    )
+    flags=st.lists(st.sampled_from(["plain", "read_only", "write_only"]), min_size=1, max_size=6)
 )
 def test_read_schema_never_contains_write_only(flags):
     with pytest.MonkeyPatch.context() as mp:

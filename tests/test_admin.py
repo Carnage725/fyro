@@ -335,9 +335,7 @@ async def test_delete_after_confirm(client):
 async def test_bulk_delete_confirms_then_deletes_only_selected(client):
     await login(client)
     await seed(4)
-    ask = await client.post(
-        "/admin/blog/post/bulk-delete", data={"ids": ["1", "3"]}, headers=HX
-    )
+    ask = await client.post("/admin/blog/post/bulk-delete", data={"ids": ["1", "3"]}, headers=HX)
     assert ask.status_code == 200 and "2 posts" in ask.text.lower()
     assert await sql("SELECT count(*) FROM blog_post") == [(4,)]
     done = await client.post(
@@ -424,8 +422,16 @@ async def test_password_change_or_deactivate_ends_that_users_sessions(client, ap
 @pytest.mark.parametrize(
     ("method", "path", "data"),
     [
-        ("post", "/admin/auth/user/1", {"username": "root", "is_superuser": "on"}),  # deactivate self
-        ("post", "/admin/auth/user/1", {"username": "root", "is_active": "on"}),  # un-superuser self
+        (
+            "post",
+            "/admin/auth/user/1",
+            {"username": "root", "is_superuser": "on"},
+        ),  # deactivate self
+        (
+            "post",
+            "/admin/auth/user/1",
+            {"username": "root", "is_active": "on"},
+        ),  # un-superuser self
         ("post", "/admin/auth/user/1/delete", {}),
         ("post", "/admin/auth/user/bulk-delete", {"ids": ["1"], "confirm": "yes"}),
     ],

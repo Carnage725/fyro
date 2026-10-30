@@ -37,7 +37,11 @@ TEMPLATE_DIR = Path(__file__).parent / "template"
 FILE_TEMPLATE = "%(year)d_%(month).2d_%(day).2d_%(hour).2d%(minute).2d-%(rev)s_%(slug)s"
 # Computed defaults that Postgres can evaluate per row, to fill rows that existed before the
 # column did. Any other default_factory is refused: give a constant or make the field optional.
-SQL_FOR_FACTORY = {uuid.uuid4: "gen_random_uuid()", datetime.now: "now()", date.today: "CURRENT_DATE"}
+SQL_FOR_FACTORY = {
+    uuid.uuid4: "gen_random_uuid()",
+    datetime.now: "now()",
+    date.today: "CURRENT_DATE",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +139,11 @@ def _fill_existing_rows(upgrade_ops: ops.UpgradeOps) -> None:
         rewritten: list[Any] = []
         for op in table_ops.ops:
             column = getattr(op, "column", None)
-            if isinstance(op, ops.AddColumnOp) and not column.nullable and column.server_default is None:
+            if (
+                isinstance(op, ops.AddColumnOp)
+                and not column.nullable
+                and column.server_default is None
+            ):
                 rewritten.extend(_fill_added_column(model, op))
             elif isinstance(op, ops.AlterColumnOp) and op.modify_nullable is False:
                 rewritten.extend(_fill_nulls(model, op))
@@ -197,7 +205,9 @@ def _fill_nulls(model: Any, alter: ops.AlterColumnOp) -> list[Any]:
     kind, value = _fill_value(model, name)
     if kind == "constant":
         # Rendered by SQLAlchemy so quoting is always right (e.g. a default of "it's").
-        value_type = sa.String() if isinstance(alter.existing_type, sa.Enum) else alter.existing_type
+        value_type = (
+            sa.String() if isinstance(alter.existing_type, sa.Enum) else alter.existing_type
+        )
         value = str(
             sa.literal(value, type_=value_type).compile(
                 dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
@@ -266,13 +276,10 @@ def migrate(target: str = "head") -> None:
         revision = None
     if revision is None:
         raise ImproperlyConfigured(
-            f"Unknown migration {target!r}. Use a revision id from {directory}, "
-            "'head' or 'zero'."
+            f"Unknown migration {target!r}. Use a revision id from {directory}, 'head' or 'zero'."
         )
     current = _current_revision()
-    applied = (
-        {r.revision for r in script.iterate_revisions(current, "base")} if current else set()
-    )
+    applied = {r.revision for r in script.iterate_revisions(current, "base")} if current else set()
     if revision.revision in applied:
         command.downgrade(cfg, revision.revision)
     else:

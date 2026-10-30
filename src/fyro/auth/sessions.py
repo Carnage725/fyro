@@ -57,7 +57,10 @@ async def create_session(user: User) -> tuple[str, datetime]:
     now = utcnow()
     expires_at = now + ABSOLUTE_LIFETIME
     await Session.objects.create(
-        token_hash=_hash(token), user_id=user.id, created_at=now, last_seen=now,
+        token_hash=_hash(token),
+        user_id=user.id,
+        created_at=now,
+        last_seen=now,
         expires_at=expires_at,
     )
     return token, expires_at

@@ -164,12 +164,16 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
 
     async def delete(pk_value: PkParam) -> Response:
         if not await model.objects.filter(**{pk: pk_value}).delete():
-            raise model.DoesNotExist(f"No {name} matches {({pk: pk_value})}.")
+            raise model.DoesNotExist(f"No {name} matches { ({pk: pk_value}) }.")
         return Response(status_code=204)
 
     # Readable names in duplicate-route errors (fyro.crud.Post.get) and OpenAPI summaries.
     for action, endpoint in [
-        ("list", list_), ("get", get), ("create", create), ("update", update), ("delete", delete)
+        ("list", list_),
+        ("get", get),
+        ("create", create),
+        ("update", update),
+        ("delete", delete),
     ]:
         endpoint.__module__ = __name__
         endpoint.__qualname__ = f"{name}.{action}"
@@ -192,7 +196,11 @@ def build_router(model: Any, auth_installed: bool = False) -> APIRouter:
         item, update, methods=["PATCH"], response_model=Read, dependencies=can_write
     )
     router.add_api_route(
-        item, delete, methods=["DELETE"], status_code=204, response_class=Response,
+        item,
+        delete,
+        methods=["DELETE"],
+        status_code=204,
+        response_class=Response,
         dependencies=can_write,
     )
     return router

@@ -39,7 +39,9 @@ def clean_state(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "installed", [["fyro.auth", "journal"], ["journal", "fyro.auth"]], ids=["auth-first", "auth-last"]
+    "installed",
+    [["fyro.auth", "journal"], ["journal", "fyro.auth"]],
+    ids=["auth-first", "auth-last"],
 )
 def test_apps_may_import_fyro_auth_in_any_order(installed):
     # bug: "Model User ... belongs to app 'auth', which is not installed" (found by the spike)

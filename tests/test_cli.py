@@ -20,9 +20,7 @@ from fyro.db import engine as db_engine
 
 runner = CliRunner()
 BASE_URL = make_url(
-    os.environ.get(
-        "FYRO_TEST_DATABASE_URL", "postgresql+asyncpg://fyro:fyro@localhost:5432/fyro"
-    )
+    os.environ.get("FYRO_TEST_DATABASE_URL", "postgresql+asyncpg://fyro:fyro@localhost:5432/fyro")
 )
 DB_URL = BASE_URL.set(database="fyro_test_cli")
 PROJECT_FILES = {
@@ -127,7 +125,12 @@ def test_new_gitignore_and_compose(tmp_path):
     gitignore = (tmp_path / "mysite" / ".gitignore").read_text().splitlines()
     assert ".env" in gitignore
     compose = (tmp_path / "mysite" / "compose.yaml").read_text()
-    for fragment in ("image: postgres:16", '"${FYRO_DB_PORT:-5432}:5432"', "POSTGRES_DB: mysite", "pg_isready"):
+    for fragment in (
+        "image: postgres:16",
+        '"${FYRO_DB_PORT:-5432}:5432"',
+        "POSTGRES_DB: mysite",
+        "pg_isready",
+    ):
         assert fragment in compose
 
 
@@ -269,7 +272,9 @@ def test_makemigrations_custom_message(project):
 def test_app_not_installed_warning(project):
     runner.invoke(app, ["startapp", "blog"])
     result = runner.invoke(app, ["makemigrations"])
-    assert "blog/ looks like an app but is not in installed_apps (mysite/settings.py)" in result.output
+    assert (
+        "blog/ looks like an app but is not in installed_apps (mysite/settings.py)" in result.output
+    )
 
 
 def test_migrate_without_migrations_is_one_line_error(project):
@@ -311,7 +316,7 @@ def server(monkeypatch):
 def test_runserver_defaults_reload_on_localhost(project, server):
     result = runner.invoke(app, ["runserver"])
     assert result.exit_code == 0, result.output
-    (app_path, options), = server.calls
+    ((app_path, options),) = server.calls
     assert app_path == "asgi:app"
     assert options["host"] == "127.0.0.1" and options["port"] == 8000
     assert options["reload"] is True
@@ -320,7 +325,7 @@ def test_runserver_defaults_reload_on_localhost(project, server):
 
 def test_runserver_options(project, server):
     runner.invoke(app, ["runserver", "--host", "0.0.0.0", "--port", "9000", "--no-reload"])
-    (_, options), = server.calls
+    ((_, options),) = server.calls
     assert (options["host"], options["port"], options["reload"]) == ("0.0.0.0", 9000, False)
 
 
@@ -423,8 +428,14 @@ def test_createsuperuser_without_fyro_auth_is_error(project):
     ("url", "fragment"),
     [
         ("postgresql+asyncpg://fyro:fyro@127.0.0.1:1/fyro", "Cannot connect to the database"),
-        (str(BASE_URL.set(database="fyro_no_such_db").render_as_string(hide_password=False)), "does not exist"),
-        (str(BASE_URL.set(password="wrong-pass").render_as_string(hide_password=False)), "password"),
+        (
+            str(BASE_URL.set(database="fyro_no_such_db").render_as_string(hide_password=False)),
+            "does not exist",
+        ),
+        (
+            str(BASE_URL.set(password="wrong-pass").render_as_string(hide_password=False)),
+            "password",
+        ),
     ],
     ids=["unreachable", "missing-database", "wrong-password"],
 )

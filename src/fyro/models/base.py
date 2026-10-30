@@ -139,12 +139,18 @@ def _read_meta(cls: type) -> dict[str, Any]:
     permissions = meta.get("permissions", {})
     where = f"{cls.__name__}.Meta.permissions"
     if not isinstance(permissions, dict):
-        raise TypeError(f"{where} must be a dict like {{'write': 'superuser'}}, got {permissions!r}.")
+        raise TypeError(
+            f"{where} must be a dict like {{'write': 'superuser'}}, got {permissions!r}."
+        )
     for action, level in permissions.items():
         if action not in PERMISSION_ACTIONS:
-            raise TypeError(f"{where}: unknown action {action!r}. Use {', '.join(PERMISSION_ACTIONS)}.")
+            raise TypeError(
+                f"{where}: unknown action {action!r}. Use {', '.join(PERMISSION_ACTIONS)}."
+            )
         if level not in PERMISSION_LEVELS:
-            raise TypeError(f"{where}: unknown level {level!r}. Use {', '.join(PERMISSION_LEVELS)}.")
+            raise TypeError(
+                f"{where}: unknown level {level!r}. Use {', '.join(PERMISSION_LEVELS)}."
+            )
     if not isinstance(meta.get("api", True), bool):
         raise TypeError(f"{cls.__name__}.Meta.api must be True or False, got {meta['api']!r}.")
     return meta

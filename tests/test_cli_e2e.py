@@ -19,9 +19,7 @@ from sqlalchemy.pool import NullPool
 pytestmark = pytest.mark.slow
 
 BASE_URL = make_url(
-    os.environ.get(
-        "FYRO_TEST_DATABASE_URL", "postgresql+asyncpg://fyro:fyro@localhost:5432/fyro"
-    )
+    os.environ.get("FYRO_TEST_DATABASE_URL", "postgresql+asyncpg://fyro:fyro@localhost:5432/fyro")
 )
 DB_URL = BASE_URL.set(database="fyro_test_e2e")
 PYTHON = sys.executable

@@ -29,7 +29,7 @@ app = typer.Typer(
     no_args_is_help=True, add_completion=False, help="fyro: Django's structure on FastAPI."
 )
 
-MANAGE_PY = '''\
+MANAGE_PY = """\
 #!/usr/bin/env python
 import os
 
@@ -38,22 +38,22 @@ from fyro.cli import main
 if __name__ == "__main__":
     os.environ.setdefault("FYRO_SETTINGS", "__NAME__.settings")
     main()
-'''
-ASGI_PY = '''\
+"""
+ASGI_PY = """\
 import os
 
 import fyro
 
 os.environ.setdefault("FYRO_SETTINGS", "__NAME__.settings")
 app = fyro.create_app()
-'''
-SETTINGS_PY = '''\
+"""
+SETTINGS_PY = """\
 from fyro import Settings
 
 
 class ProjectSettings(Settings):
     installed_apps: list[str] = []
-'''
+"""
 ENV = """\
 # Development only. Never commit this file. In production set real values instead.
 FYRO_SECRET_KEY=__KEY__

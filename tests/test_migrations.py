@@ -15,9 +15,7 @@ from fyro.apps import Registry
 from fyro.conf import ImproperlyConfigured, get_settings
 
 BASE_URL = make_url(
-    os.environ.get(
-        "FYRO_TEST_DATABASE_URL", "postgresql+asyncpg://fyro:fyro@localhost:5432/fyro"
-    )
+    os.environ.get("FYRO_TEST_DATABASE_URL", "postgresql+asyncpg://fyro:fyro@localhost:5432/fyro")
 )
 DB_URL = BASE_URL.set(database="fyro_test_migrations")
 FILE_NAME = re.compile(r"^\d{4}_\d{2}_\d{2}_\d{4}-[0-9a-f]{12}_(?P<slug>\w+)\.py$")
@@ -199,7 +197,11 @@ def test_constraint_names_follow_naming_convention(project):
     migrations.makemigrations()
     migrations.migrate()
     rows = run_sql(DB_URL, "SELECT indexname FROM pg_indexes WHERE tablename = 'blog_post'")
-    assert {name for (name,) in rows} == {"pk_blog_post", "uq_blog_post_slug", "ix_blog_post_author"}
+    assert {name for (name,) in rows} == {
+        "pk_blog_post",
+        "uq_blog_post_slug",
+        "ix_blog_post_author",
+    }
 
 
 def test_migrate_down_to_revision_zero_and_back_up(project):
@@ -293,8 +295,13 @@ def add_field_to_table_with_rows(project, field: str, imports: str = ""):
     _, write_models = project
     migrations.makemigrations()
     migrations.migrate()
-    run_sql(DB_URL, "INSERT INTO blog_post (title, slug, author) VALUES ('a', 'a', 'x'), ('b', 'b', 'x')")
-    source = POST.replace("from fyro import Field, Model", imports + "from fyro import Field, Model")
+    run_sql(
+        DB_URL,
+        "INSERT INTO blog_post (title, slug, author) VALUES ('a', 'a', 'x'), ('b', 'b', 'x')",
+    )
+    source = POST.replace(
+        "from fyro import Field, Model", imports + "from fyro import Field, Model"
+    )
     write_models(source + f"        {field}\n")
     return migrations.makemigrations()
 
@@ -322,7 +329,10 @@ def test_constant_default_fills_old_rows_and_leaves_no_db_default(project, field
     # bug: NotNullViolation on migrate (reproduced at the phase 7 gate)
     add_field_to_table_with_rows(project, field)
     migrations.migrate()
-    assert run_sql(DB_URL, f"SELECT {column} FROM blog_post ORDER BY id") == [(expected,), (expected,)]
+    assert run_sql(DB_URL, f"SELECT {column} FROM blog_post ORDER BY id") == [
+        (expected,),
+        (expected,),
+    ]
     assert column_state(column) == ("NO", None)  # Python stays the only source of the default
     assert migrations.makemigrations() is None  # and no spurious diff afterwards
 
@@ -384,13 +394,17 @@ def test_unique_field_with_constant_default_on_table_with_rows_is_refused(projec
     # bug: every existing row would get the same value, which the unique constraint rejects
     root, _ = project
     with pytest.raises(ImproperlyConfigured, match=r"Post\.code.*unique"):
-        add_field_to_table_with_rows(project, 'code: str = Field(default="x", max_length=20, unique=True)')
+        add_field_to_table_with_rows(
+            project, 'code: str = Field(default="x", max_length=20, unique=True)'
+        )
     assert len(revision_files(root)) == 1
 
 
 def test_unique_uuid_field_on_table_with_rows_is_fine(project):
     add_field_to_table_with_rows(
-        project, "token: uuid.UUID = Field(default_factory=uuid.uuid4, unique=True)", "import uuid\n    "
+        project,
+        "token: uuid.UUID = Field(default_factory=uuid.uuid4, unique=True)",
+        "import uuid\n    ",
     )
     migrations.migrate()
     tokens = run_sql(DB_URL, "SELECT token FROM blog_post")
@@ -403,7 +417,9 @@ def test_unique_uuid_field_on_table_with_rows_is_fine(project):
 def optional_then_required(project, before: str, after: str, imports: str = ""):
     """Migrate with an optional field, insert one NULL and one filled row, then require it."""
     _, write_models = project
-    source = POST.replace("from fyro import Field, Model", imports + "from fyro import Field, Model")
+    source = POST.replace(
+        "from fyro import Field, Model", imports + "from fyro import Field, Model"
+    )
     write_models(source + f"        {before}\n")
     migrations.makemigrations()
     migrations.migrate()
@@ -419,7 +435,10 @@ def test_optional_to_required_fills_nulls_from_constant_default(project):
     optional_then_required(project, "subtitle: str | None = None", 'subtitle: str = "untitled"')
     run_sql(DB_URL, "UPDATE blog_post SET subtitle = 'kept' WHERE slug = 'b'")  # one row non-NULL
     migrations.migrate()
-    assert run_sql(DB_URL, "SELECT subtitle FROM blog_post ORDER BY slug") == [("untitled",), ("kept",)]
+    assert run_sql(DB_URL, "SELECT subtitle FROM blog_post ORDER BY slug") == [
+        ("untitled",),
+        ("kept",),
+    ]
     assert column_state("subtitle") == ("NO", None)
     assert migrations.makemigrations() is None
 

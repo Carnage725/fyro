@@ -68,3 +68,6 @@ dev = [
 docs = [
     "zensical==0.0.69",
 ]
+
+[tool.ruff]
+line-length = 100

@@ -62,8 +62,7 @@ def _check_auth(auth_installed: bool) -> None:
     secured = sorted(m.__name__ for m in models if m.__fyro_permissions__)
     if secured:
         raise ImproperlyConfigured(
-            f"{', '.join(secured)} set Meta.permissions, which needs \"fyro.auth\" in "
-            "installed_apps."
+            f'{", ".join(secured)} set Meta.permissions, which needs "fyro.auth" in installed_apps.'
         )
     if models and not get_settings().debug:
         logger.warning("API writes are open to anyone; add fyro.auth to installed_apps.")

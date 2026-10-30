@@ -106,7 +106,9 @@ def test_field_named_like_a_list_parameter_is_startup_error(field):
         (Model,),
         {"__module__": "blog.models", "__annotations__": {field: str}},
     )
-    with pytest.raises(ImproperlyConfigured, match=rf"(?i)Post\.{field}.*rename.*Meta\.api = False"):
+    with pytest.raises(
+        ImproperlyConfigured, match=rf"(?i)Post\.{field}.*rename.*Meta\.api = False"
+    ):
         create_app()
 
 
