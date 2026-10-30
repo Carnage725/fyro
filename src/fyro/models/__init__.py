@@ -1,4 +1,4 @@
 from fyro.models.base import Model
-from fyro.models.fields import Field
+from fyro.models.fields import Field, ForeignKey
 
-__all__ = ["Field", "Model"]
+__all__ = ["Field", "ForeignKey", "Model"]

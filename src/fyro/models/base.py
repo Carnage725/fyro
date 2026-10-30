@@ -9,11 +9,12 @@ from typing import Annotated, Any, ClassVar, Union, get_args, get_origin
 
 import sqlalchemy as sa
 from pydantic import AfterValidator, BaseModel
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from fyro import apps, db
 from fyro.conf import ImproperlyConfigured
-from fyro.models.fields import MISSING, FieldInfo
+from fyro.models.fields import MISSING, FieldInfo, ForeignKeyInfo
 from fyro.models.manager import Manager, QuerySet
 from fyro.models.schemas import build_schemas
 
@@ -33,6 +34,7 @@ ADMIN_KEYS = ("admin", "list_display", "search_fields")
 META_KEYS = ("table_name", "api", "permissions", *ADMIN_KEYS, *EXCLUDE_KEYS, *SCHEMA_KEYS)
 PERMISSION_ACTIONS = ("read", "write")
 PERMISSION_LEVELS = ("public", "authenticated", "superuser")
+ON_DELETE = {"cascade": "CASCADE", "set_null": "SET NULL", "restrict": "RESTRICT"}
 # Predictable constraint names: a unique violation maps back to its field (409s), and
 # Alembic can diff and drop constraints by name.
 NAMING_CONVENTION = {
@@ -120,6 +122,46 @@ def _column_type(where: str, tp: Any, info: FieldInfo) -> Any:
     return factory()
 
 
+def _foreign_key(where: str, target: Any, nullable: bool, info: FieldInfo) -> sa.Column:
+    """Check `name: Target = ForeignKey(...)` and return the target's primary key column."""
+    if not isinstance(info, ForeignKeyInfo):
+        raise TypeError(
+            f"{where}: a link to model {target.__name__} needs a ForeignKey, "
+            f'e.g. `= ForeignKey(on_delete="cascade")`.'
+        )
+    if not (isinstance(target, type) and issubclass(target, Model)):
+        raise TypeError(f"{where}: ForeignKey needs a Model class as its type, got {target!r}.")
+    if info.on_delete not in ON_DELETE:
+        raise TypeError(
+            f"{where}: on_delete={info.on_delete!r} is not valid. "
+            'Use on_delete="cascade", "set_null" or "restrict".'
+        )
+    if info.on_delete == "set_null" and not nullable:
+        raise TypeError(
+            f'{where}: on_delete="set_null" needs a nullable field. '
+            f"Declare it as `{target.__name__} | None`."
+        )
+    primary_key = list(target.__table__.primary_key.columns)
+    if len(primary_key) != 1:
+        raise TypeError(
+            f"{where}: {target.__name__} has a composite primary key; it cannot be linked."
+        )
+    return primary_key[0]
+
+
+def _link_getattribute(self: Any, name: str) -> Any:
+    """`__getattribute__` for models with ForeignKeys: an unloaded link names the fix."""
+    try:
+        return object.__getattribute__(self, name)
+    except InvalidRequestError as error:  # lazy="raise"
+        if name not in type(self).__fyro_links__:
+            raise
+        model = type(self).__name__
+        raise db.NotLoaded(
+            f"{model}.{name} is not loaded. Use {model}.objects.select_related({name!r})."
+        ) from error
+
+
 def _read_meta(cls: type) -> dict[str, Any]:
     meta_cls = cls.__dict__.get("Meta")
     if meta_cls is None:
@@ -201,6 +243,7 @@ class Model(DeclarativeBase):
     __fyro_admin__: ClassVar[bool]
     __fyro_list_display__: ClassVar[tuple[str, ...]]
     __fyro_search_fields__: ClassVar[tuple[str, ...]]
+    __fyro_links__: ClassVar[dict[str, str]]  # ForeignKey name -> its id field
     objects: ClassVar[QuerySet] = Manager()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kw: Any) -> None:
@@ -216,7 +259,16 @@ class Model(DeclarativeBase):
         fields: dict[str, FieldInfo] = {}
         hints: dict[str, Any] = {}
         columns: dict[str, Any] = {}
-        for field_name, tp in inspect.get_annotations(cls, eval_str=True).items():
+        links: dict[str, tuple[Any, Any]] = {}  # name -> (relationship, annotation)
+        try:
+            annotations = inspect.get_annotations(cls, eval_str=True)
+        except NameError as error:
+            raise TypeError(
+                f"{name}: {error.name!r} is not defined. A ForeignKey must point at a model "
+                "that is already defined (import it first). Links to the model itself or to "
+                "a model defined later are not supported yet."
+            ) from error
+        for field_name, tp in annotations.items():
             if get_origin(tp) is ClassVar:
                 continue
             where = f"{name}.{field_name}"
@@ -228,9 +280,30 @@ class Model(DeclarativeBase):
                     "(the field would be in no schema). Remove one."
                 )
             base_tp, nullable = _unwrap_optional(tp)
+            link = None
+            extra: tuple[Any, ...] = ()
+            if isinstance(info, ForeignKeyInfo) or (
+                isinstance(base_tp, type) and issubclass(base_tp, Model)
+            ):
+                # `author: User = ForeignKey(...)` is stored as the column `author_id`.
+                target_pk = _foreign_key(where, base_tp, nullable, info)
+                link, link_tp = field_name, tp
+                field_name = f"{field_name}_id"
+                where = f"{name}.{field_name}"
+                tp = target_pk.type.python_type | None if nullable else target_pk.type.python_type
+                column_type = target_pk.type
+                extra = (sa.ForeignKey(target_pk, ondelete=ON_DELETE[info.on_delete]),)
+            else:
+                column_type = _column_type(where, base_tp, info)
+            if field_name in columns:
+                raise TypeError(
+                    f"{where}: this name is used twice. A ForeignKey named `x` adds a column "
+                    "named `x_id`; rename one of the fields."
+                )
             default = info.default_factory or (None if info.default is MISSING else info.default)
             columns[field_name] = mapped_column(
-                _column_type(where, base_tp, info),
+                column_type,
+                *extra,
                 primary_key=info.primary_key,
                 nullable=nullable,
                 unique=info.unique,
@@ -239,6 +312,11 @@ class Model(DeclarativeBase):
             )
             fields[field_name] = info
             hints[field_name] = tp
+            if link:
+                # lazy="raise": async can't lazy-load, so an unloaded link is an error, not IO.
+                # foreign_keys picks this column when two links share a target.
+                column = columns[field_name].column
+                links[link] = (relationship(base_tp, lazy="raise", foreign_keys=[column]), link_tp)
 
         if not any(f.primary_key for f in fields.values()):
             if "id" in fields:
@@ -263,12 +341,17 @@ class Model(DeclarativeBase):
 
         # Rewrite plain annotations into Mapped[T] + mapped_column() before SQLAlchemy
         # maps the class. Delete first so columns follow declaration order, id first.
-        for field_name in columns:
+        for field_name in [*columns, *links]:
             if field_name in cls.__dict__:
                 delattr(cls, field_name)
         for field_name, column in columns.items():
             setattr(cls, field_name, column)
-        cls.__annotations__ = {n: Mapped[tp] for n, tp in hints.items()}
+        for field_name, (rel, _) in links.items():
+            setattr(cls, field_name, rel)
+        cls.__annotations__ = {
+            **{n: Mapped[tp] for n, tp in hints.items()},
+            **{n: Mapped[tp] for n, (_, tp) in links.items()},
+        }
         cls.__tablename__ = meta.get("table_name") or f"{label}_{_snake(name)}"
 
         super().__init_subclass__(**kw)
@@ -279,6 +362,9 @@ class Model(DeclarativeBase):
         cls.__fyro_admin__ = meta.get("admin", True)
         cls.__fyro_list_display__ = list_display
         cls.__fyro_search_fields__ = search_fields
+        cls.__fyro_links__ = {link: f"{link}_id" for link in links}
+        if links:  # only models with links pay for the hook (about 1 us per row read)
+            cls.__getattribute__ = _link_getattribute  # type: ignore[method-assign]
         schema_hints = {n: _schema_type(tp, columns[n].column) for n, tp in hints.items()}
         cls.Create, cls.Read, cls.Update = build_schemas(name, schema_hints, fields, meta)
         for error in (db.DoesNotExist, db.MultipleObjectsReturned):

@@ -60,3 +60,27 @@ def Field(
         write_only=write_only,
         constraints={k: v for k, v in constraints.items() if v is not None},
     )
+
+
+@dataclass(frozen=True)
+class ForeignKeyInfo(FieldInfo):
+    on_delete: str | None = None
+
+
+def ForeignKey(
+    *,
+    on_delete: str | None = None,
+    default: Any = MISSING,
+    read_only: bool = False,
+    write_only: bool = False,
+    description: str | None = None,
+) -> Any:
+    """Link to another model: `author: User = ForeignKey(on_delete="cascade")` adds `author_id`."""
+    return ForeignKeyInfo(
+        default=default,
+        index=True,  # Postgres does not index foreign keys by itself
+        read_only=read_only,
+        write_only=write_only,
+        constraints={"description": description} if description is not None else {},
+        on_delete=on_delete,
+    )
