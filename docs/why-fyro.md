@@ -37,7 +37,6 @@ In fyro you write this:
 ```python
 from fyro import Field, Model
 
-
 class Post(Model):
     title: str = Field(max_length=200)
     body: str
